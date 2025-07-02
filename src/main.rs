@@ -90,7 +90,7 @@ struct Puzzle {
     // map from coordinate vector (only contains -n+1, n-1 every other, and ±n)
     // to side (sides related by ! are opposite)
     // #[serde(with = "serde_map")]
-    stickers: HashMap<Pos, Side>,
+    stickers: HashMap<Vec<Coord>, Side>,
 }
 impl Puzzle {
     fn new(n: i16, d: u16) -> Self {
@@ -101,8 +101,8 @@ impl Puzzle {
                 n,
                 d,
                 stickers: HashMap::from([
-                    (Pos(vec![Coord(-n)]), Side(!0)),
-                    (Pos(vec![Coord(n)]), Side(0)),
+                    (vec![Coord(-n)], Side(!0)),
+                    (vec![Coord(n)], Side(0)),
                 ]),
             };
         }
@@ -118,7 +118,7 @@ impl Puzzle {
             for f in 0..(d as i16) {
                 // TODO: this is bad
                 stickers.insert(
-                    Pos(pos.clone().into_iter().map(Coord).collect()),
+                    (pos.clone().into_iter().map(Coord).collect()),
                     if side >= 0 { Side(f) } else { Side(!f) },
                 );
                 pos.rotate_right(1);
@@ -322,35 +322,175 @@ impl LayoutOld {
     }
 }
 
-/// mapping from Pos to [0.0, 1.0]^2
-/// +x is right, +y is up
+// TODO: this should be owned by Shape
+fn all_positions(n: i16, d: u16) -> impl Iterator<Item = Vec<Coord>> {
+    (0..d)
+        .map(|_| {
+            once(-n)
+                .chain((-n + 1..n).step_by(2))
+                .chain(once(n))
+                .map(Coord)
+        })
+        .multi_cartesian_product()
+        // discard invalid positions
+        // ie ones that are on multiple sides
+        .filter(move |pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
+}
+
+// /// mapping from Pos to [0.0, 1.0]^2
+// /// +x is right, +y is up
+// TODO: fix y up
+// struct Layout2d {
+//     sticker_size: f32,
+//     // width is guaranteed to be 1.0
+//     height: f32,
+//     mapping: HashMap<Pos, (f32, f32)>,
+// }
+// impl Layout2d {
+//     fn new(n: i16, d: u16) -> Self {
+//         let layout = LayoutOld::make_layout(n, d, false, false);
+//         let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
+//         let mut mapping = HashMap::new();
+//         for ((x, y), pos) in layout.points {
+//             mapping.insert(
+//                 Pos(pos.into_iter().map(Coord).collect()),
+//                 (x as f32 * sticker_size, y as f32 * 2.0 * sticker_size),
+//             );
+//         }
+//         Layout2d {
+//             sticker_size,
+//             height: mapping
+//                 .values()
+//                 .map(|(_x, y)| *y)
+//                 .reduce(f32::max)
+//                 .unwrap_or(0.0),
+//             mapping,
+//         }
+//     }
+// }
+// struct Layout2d {
+//     width: u16,
+//     height: u16,
+//     mapping: HashMap<Pos, (u16, u16)>,
+// }
+// impl Layout2d {
+//     fn new(n: i16, d: u16) -> Self {
+//         let layout = LayoutOld::make_layout(n, d, false, false);
+//         // let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
+//         let mut mapping = HashMap::new();
+//         for ((x, y), pos) in layout.points {
+//             mapping.insert(Pos(pos.into_iter().map(Coord).collect()), (x as _, (2 * y) as _));
+//         }
+//         Layout2d {
+//             width: layout.width,
+//             height: layout.height,
+//             mapping,
+//         }
+//     }
+// }
 struct Layout2d {
-    sticker_size: f32,
-    // width is guaranteed to be 1.0
-    height: f32,
-    mapping: HashMap<Pos, (f32, f32)>,
+    width_lo: i16,
+    width_hi: i16,
+    height_lo: i16,
+    height_hi: i16,
+    mapping: HashMap<Vec<Coord>, (i16, i16)>,
 }
 impl Layout2d {
     fn new(n: i16, d: u16) -> Self {
-        let layout = LayoutOld::make_layout(n, d, false, false);
-        let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
+        // let layout = LayoutOld::make_layout(n, d, false, false);
+        // // let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
+        // let mut mapping = HashMap::new();
+        // for ((x, y), pos) in layout.points {
+        //     mapping.insert(Pos(pos.into_iter().map(Coord).collect()), (x as _, (2 * y) as _));
+        // }
+        // Layout2d {
+        //     width: layout.width,
+        //     height: layout.height,
+        //     mapping,
+        // }
         let mut mapping = HashMap::new();
-        for ((x, y), pos) in layout.points {
-            mapping.insert(
-                Pos(pos.into_iter().map(Coord).collect()),
-                (x as f32 * sticker_size, y as f32 * 2.0 * sticker_size),
-            );
+        let mut width_lo = i16::MAX;
+        let mut width_hi = i16::MIN;
+        let mut height_lo = i16::MAX;
+        let mut height_hi = i16::MIN;
+        for pos in (0..d)
+            .map(|_| {
+                once(-n)
+                    .chain((-n + 1..n).step_by(2))
+                    .chain(once(n))
+                    .map(Coord)
+            })
+            .multi_cartesian_product()
+            // discard invalid positions
+            // ie ones that are on multiple sides
+            .filter(|pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
+        {
+            let (x, y) = Self::get(n, &pos);
+            mapping.insert(pos, (x, y));
+            width_lo = width_lo.min(x);
+            width_hi = width_hi.max(x);
+            height_lo = height_lo.min(y);
+            height_hi = height_hi.max(y);
         }
         Layout2d {
-            sticker_size,
-            height: mapping
-                .values()
-                .map(|(_x, y)| *y)
-                .reduce(f32::max)
-                .unwrap_or(0.0),
+            width_lo,
+            width_hi,
+            height_lo,
+            height_hi,
             mapping,
         }
     }
+
+    fn get(n: i16, pos: &[Coord]) -> (i16, i16) {
+        if pos.len() == 0 {
+            panic!("idk");
+        }
+        if pos.len() == 1 {
+            return (
+                once(-n)
+                    .chain((-n + 1..n).step_by(2))
+                    .chain(once(n))
+                    .map(Coord)
+                    .position(|c| c == pos[0])
+                    .unwrap() as _,
+                0,
+            );
+        }
+        let horizontal = pos.len() % 2 == 1;
+        let (lower_x, lower_y) = Self::get(n, &pos[..(pos.len() - 1)]);
+        let pos_last = *pos.last().unwrap();
+        if pos_last.0.abs() == n {
+            // cap
+            todo!()
+        } else {
+            // asdf
+            if horizontal {
+                (lower_x, lower_y)
+            } else {
+                (lower_x, lower_y)
+            }
+        }
+    }
+
+    fn width(&self) -> u16 {
+        (self.width_hi - self.width_lo + 1) as u16
+    }
+    fn height(&self) -> u16 {
+        (self.height_hi - self.height_lo + 1) as u16
+    }
+
+    // fn map_egui(&self, rect: egui::Rect, pos: &[Coord]) -> egui::Pos2 {
+    //     let scale = f32::max(
+    //         rect.width() / self.width() as f32,
+    //         rect.height() / self.height() as f32,
+    //     );
+    //     let (x, y) = self.mapping[pos];
+    //     rect.left_top()
+    //         + egui::Vec2::new(
+    //             (x - self.width_lo) as f32 / self.width() as f32,
+    //             (y - self.height_lo) as f32 / self.height() as f32,
+    //         ) * scale
+    // }
 }
 
 struct App {
@@ -372,8 +512,16 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 // let dt = ctx.input(|input_state| input_state.stable_dt);
                 // // println!("dt: {:?}", dt);
-                let scale = ui.available_rect_before_wrap().size().min_elem();
+                // let scale = ui.available_rect_before_wrap().size().min_elem();
+                // let scale = ui.available_rect_before_wrap().width();
                 let painter = ui.painter();
+                // let sticker_size =
+                //     ui.available_rect_before_wrap().width() / self.layout.width() as f32;
+                let rect = ui.available_rect_before_wrap();
+                let scale = f32::max(
+                    rect.width() / self.layout.width() as f32,
+                    rect.height() / self.layout.height() as f32,
+                );
                 for (pos, side) in &self.puzzle.stickers {
                     // let (x, y) = self.layout.mapping.get(pos).unwrap();
                     // let rect = Rect::from_min_size(
@@ -381,19 +529,16 @@ impl eframe::App for App {
                     //     Vec2::splat(square_size),
                     // );
                     // painter.rect_filled(rect, 0.0, Color32::from_black());
+                    let (x, y) = self.layout.mapping[pos];
                     painter.rect_filled(
                         egui::Rect::from_min_size(
-                            scale
-                                * egui::Pos2::new(
-                                    self.layout.mapping[pos].0 + self.layout.sticker_size,
-                                    1.0 - self.layout.mapping[pos].1
-                                        - 2.0 * self.layout.sticker_size,
-                                ),
-                            scale
-                                * egui::Vec2::new(
-                                    self.layout.sticker_size,
-                                    self.layout.sticker_size,
-                                ),
+                            rect.left_top()
+                                + egui::Vec2::new(
+                                    (x - self.layout.width_lo) as f32 / self.layout.width() as f32,
+                                    (y - self.layout.height_lo) as f32
+                                        / self.layout.height() as f32,
+                                ) * scale,
+                            scale * egui::Vec2::new(1.0, 1.0),
                         ),
                         0.0,
                         side.color(),
