@@ -7,7 +7,7 @@ use std::iter::once;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Side(i16);
 impl Side {
-    fn letter(self) -> char {
+    fn name(self) -> char {
         const POS_NAMES: &[char] = &['R', 'U', 'F', 'O', 'A', 'Γ', 'Θ', 'Ξ', 'Σ', 'Ψ'];
         const NEG_NAMES: &[char] = &['L', 'D', 'B', 'I', 'P', 'Δ', 'Λ', 'Π', 'Φ', 'Ω'];
         if self.0 >= 0 {
@@ -16,6 +16,18 @@ impl Side {
             NEG_NAMES[(!self.0) as usize]
         }
     }
+
+    fn grip_key(self) -> char {
+        todo!()
+    }
+    // TODO: better name
+    fn grip_key_right(self) -> char {
+        todo!()
+    }
+    // const POS_KEYS: &[char] = &['f', 'e', 'r', 't', 'v', 'y', 'n', 'q', ',', '/'];
+    // const NEG_KEYS: &[char] = &['s', 'd', 'w', 'g', 'c', 'h', 'b', 'a', 'm', '.'];
+    // const POS_KEYS_RIGHT: &[char] = &['l', 'i', 'j', '.', 'p', '['];
+    // const NEG_KEYS_RIGHT: &[char] = &['u', ',', 'o', 'k', 'l', ';'];
 
     fn color(self) -> egui::Color32 {
         // TODO: make this const
@@ -264,11 +276,41 @@ impl Layout2d {
 struct App {
     puzzle: Puzzle,
     layout: Layout2d,
+    /// where the labels for the sides go
+    side_positions: HashMap<Side, Vec<Coord>>,
 }
 impl App {
     fn new(n: i16, d: u16) -> Self {
+        const MAX_DIM: u16 = 10;
+        const MAX_LAYERS: i16 = 19;
+        assert!(d > 0, "dimension should be greater than 0");
+        assert!(
+            d <= MAX_DIM,
+            "dimension should be less than or equal to {MAX_DIM}"
+        );
+        assert!(n > 0, "side should be greater than 0");
+        assert!(
+            n <= MAX_LAYERS,
+            "side should be less than or equal to {MAX_LAYERS}"
+        );
+
         let puzzle = Puzzle::new(n, d);
         let layout = Layout2d::new(n, d);
+        let mut side_positions = HashMap::new();
+        for side in 0..d as i16 {
+            {
+                // positive
+                let mut pos = vec![if n % 2 == 1 { Coord(0) } else { Coord(1) }; d as usize];
+                pos[side as usize] = Coord(n - 1);
+                side_positions.insert(Side(side), pos);
+            }
+            {
+                // negative
+                let mut pos = vec![if n % 2 == 1 { Coord(0) } else { Coord(1) }; d as usize];
+                pos[side as usize] = Coord(1 - n);
+                side_positions.insert(Side(!side), pos);
+            }
+        }
         // println!("width: {}, height: {}", layout.width, layout.height);
         // for (pos, xy) in &layout.mapping {
         //     println!(
@@ -277,7 +319,11 @@ impl App {
         //         xy,
         //     );
         // }
-        App { puzzle, layout }
+        App {
+            puzzle,
+            layout,
+            side_positions,
+        }
     }
 
     fn render_png(&self, path: &str) {
@@ -327,28 +373,32 @@ impl eframe::App for App {
                     rect.height() / self.layout.height as f32,
                 );
                 // TODO: pixel alignment
-                let draw_sticker = |pos: &[Coord], color: egui::Color32| {
-                    // let (x, y) = self.layout.mapping.get(pos).unwrap();
-                    // let rect = Rect::from_min_size(
-                    //     pos.to_vec2() * square_size,
-                    //     Vec2::splat(square_size),
-                    // );
-                    // painter.rect_filled(rect, 0.0, Color32::from_black());
+                let rect_of_sticker = |pos: &[Coord]| {
                     let (x, y) = self.layout.mapping[pos];
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::Pos2::new(x as f32, (self.layout.height - y - 1) as f32) * scale,
-                            scale * egui::Vec2::new(1.0, 1.0),
-                        ),
-                        0.0,
-                        color,
-                    );
+                    egui::Rect::from_min_size(
+                        egui::Pos2::new(x as f32, (self.layout.height - y - 1) as f32) * scale,
+                        scale * egui::Vec2::new(1.0, 1.0),
+                    )
+                };
+                let draw_sticker = |pos: &[Coord], color: egui::Color32| {
+                    let (x, y) = self.layout.mapping[pos];
+                    painter.rect_filled(rect_of_sticker(pos), 0.0, color);
                 };
                 for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
-                    draw_sticker(&pos, egui::Color32::GRAY);
+                    draw_sticker(&pos, egui::Color32::DARK_GRAY);
                 }
                 for (pos, side) in &self.puzzle.stickers {
                     draw_sticker(pos, side.color());
+                }
+                for (side, pos) in &self.side_positions {
+                    // TODO: fancy text sizing
+                    painter.text(
+                        rect_of_sticker(pos).center(),
+                        egui::Align2::CENTER_CENTER,
+                        side.name().to_string(),
+                        egui::TextStyle::Monospace.resolve(&ctx.style()),
+                        egui::Color32::LIGHT_GRAY,
+                    );
                 }
             });
     }
@@ -365,6 +415,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "rectangle",
         native_options,
-        Box::new(|_cc| Ok(Box::new(App::new(3, 10)))),
+        Box::new(|_cc| Ok(Box::new(App::new(3, 3)))),
     )
 }
