@@ -135,18 +135,19 @@ impl Cut {
     }
 
     /// gives all positions for this shape, including internal ones
-    // fn positions(shape: &[Cut]) -> impl Iterator<Item = Vec<Coord>> {
-    fn positions(n: i16, d: u16) -> impl Iterator<Item = Vec<Coord>> {
-        (0..d)
-            .map(|_| {
-                once(-n)
-                    .chain((-n + 1..n).step_by(2))
-                    .chain(once(n))
-                    .map(Coord)
-            })
+    fn positions(shape: &[Cut]) -> impl Iterator<Item = Vec<Coord>> {
+        shape
+            .iter()
+            .map(|cut| cut.coords().collect::<Vec<_>>())
             .multi_cartesian_product()
             // discard ones that are on multiple sides, because that's impossible
-            .filter(move |pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
+            .filter(move |pos| {
+                pos.iter()
+                    .zip(shape)
+                    .filter(|(coord, cut)| coord.0.abs() == cut.0)
+                    .count()
+                    <= 1
+            })
     }
 }
 
@@ -156,11 +157,16 @@ impl Cut {
 #[derive(Clone, Debug)]
 struct LayerMask(Vec<bool>);
 impl LayerMask {
-    fn new(n: i16) -> Self {
-        let mut ret = vec![false; (n as usize - 1) / 2];
-        if n > 1 {
-            ret[0] = true;
-        }
+    // fn new(n: i16) -> Self {
+    //     let mut ret = vec![false; (n as usize - 1) / 2];
+    //     if n > 1 {
+    //         ret[0] = true;
+    //     }
+    //     LayerMask(ret)
+    // }
+    fn new() -> Self {
+        let mut ret = vec![false; (App::MAX_LAYERS as usize - 1) / 2];
+        ret[0] = true;
         LayerMask(ret)
     }
 }
@@ -203,25 +209,22 @@ impl Turn {
 #[derive(Clone, Debug)]
 enum TurnBuilder {
     Side {
-        n: i16,
-        d: u16,
+        shape: Vec<Cut>,
         layers: LayerMask,
         side: Option<Side>,
         from: Option<Side>,
         // to: Option<Side>,
     },
     Puzzle {
-        n: i16,
-        d: u16,
+        shape: Vec<Cut>,
         from: Option<Side>,
     },
 }
 impl TurnBuilder {
-    fn new(n: i16, d: u16) -> Self {
+    fn new(shape: &[Cut]) -> Self {
         TurnBuilder::Side {
-            n,
-            d,
-            layers: LayerMask::new(n),
+            shape: shape.to_vec(),
+            layers: LayerMask::new(),
             side: None,
             from: None,
         }
@@ -230,13 +233,12 @@ impl TurnBuilder {
     /// returns Some if the turn is complete
     fn update(&mut self, key: egui::Key) -> Option<Turn> {
         if key == egui::Key::Escape {
-            *self = TurnBuilder::new(self.n(), self.d());
+            *self = TurnBuilder::new(self.shape());
             return None;
         }
         if key == egui::Key::X {
             *self = TurnBuilder::Puzzle {
-                n: self.n(),
-                d: self.d(),
+                shape: self.shape().to_vec(),
                 from: None,
             };
             return None;
@@ -245,36 +247,35 @@ impl TurnBuilder {
             if key == 0 {
                 return None;
             }
-            if key > (self.n() as usize - 1) / 2 {
-                return None;
+            // if key > (self.n() as usize - 1) / 2 {
+            //     return None;
+            // }
+            if let TurnBuilder::Puzzle { shape, .. } = self {
+                *self = TurnBuilder::Side {
+                    shape: shape.clone(),
+                    layers: LayerMask::new(),
+                    side: None,
+                    from: None,
+                };
             }
             match self {
                 TurnBuilder::Side { layers, .. } => {
                     layers.0[key - 1] = !layers.0[key - 1];
                 }
-                TurnBuilder::Puzzle { n, d, .. } => {
-                    *self = TurnBuilder::Side {
-                        n: *n,
-                        d: *d,
-                        layers: LayerMask::new(*n),
-                        side: None,
-                        from: None,
-                    };
-                }
+                TurnBuilder::Puzzle { shape, .. } => unreachable!(),
             }
             return None;
         }
-        if let Some(s) = Side::try_from_side_key(self.d(), key) {
+        if let Some(s) = Side::try_from_side_key(self.shape().len() as _, key) {
             match self {
                 TurnBuilder::Side { side, from, .. } => {
                     *side = Some(s);
                     *from = None;
                 }
-                TurnBuilder::Puzzle { n, d, .. } => {
+                TurnBuilder::Puzzle { shape, .. } => {
                     *self = TurnBuilder::Side {
-                        n: *n,
-                        d: *d,
-                        layers: LayerMask::new(*n),
+                        shape: shape.clone(),
+                        layers: LayerMask::new(),
                         side: Some(s),
                         from: None,
                     };
@@ -284,7 +285,7 @@ impl TurnBuilder {
         }
         match self {
             TurnBuilder::Side {
-                d,
+                shape,
                 side,
                 from,
                 layers,
@@ -292,7 +293,7 @@ impl TurnBuilder {
             } => {
                 if let Some(s) = side {
                     if let Some(f) = from {
-                        if let Some(t) = Side::try_from_axis_key(*d, key) {
+                        if let Some(t) = Side::try_from_axis_key(shape.len() as _, key) {
                             let ret = Some(Turn::Side {
                                 side: *s,
                                 from: *f,
@@ -303,19 +304,19 @@ impl TurnBuilder {
                             return ret;
                         }
                     } else {
-                        *from = Side::try_from_axis_key(*d, key);
+                        *from = Side::try_from_axis_key(shape.len() as _, key);
                     }
                 }
             }
-            TurnBuilder::Puzzle { d, from, .. } => {
+            TurnBuilder::Puzzle { shape, from, .. } => {
                 if let Some(f) = from {
-                    if let Some(t) = Side::try_from_axis_key(*d, key) {
+                    if let Some(t) = Side::try_from_axis_key(shape.len() as _, key) {
                         let ret = Some(Turn::Puzzle { from: *f, to: t });
                         *from = None;
                         return ret;
                     }
                 } else {
-                    *from = Side::try_from_axis_key(*d, key);
+                    *from = Side::try_from_axis_key(shape.len() as _, key);
                 }
             }
         }
@@ -323,16 +324,10 @@ impl TurnBuilder {
     }
 
     // TODO: these are used for evil
-    fn n(&self) -> i16 {
+    fn shape(&self) -> &[Cut] {
         match self {
-            TurnBuilder::Side { n, .. } => *n,
-            TurnBuilder::Puzzle { n, .. } => *n,
-        }
-    }
-    fn d(&self) -> u16 {
-        match self {
-            TurnBuilder::Side { d, .. } => *d,
-            TurnBuilder::Puzzle { d, .. } => *d,
+            TurnBuilder::Side { shape, .. } => &shape,
+            TurnBuilder::Puzzle { shape, .. } => &shape,
         }
     }
 }
@@ -346,52 +341,83 @@ enum TurnError {
 
 #[derive(Clone, Debug)]
 struct Puzzle {
-    n: i16,
-    d: u16,
+    shape: Vec<Cut>,
     // #[serde(with = "serde_map")]
     stickers: HashMap<Vec<Coord>, Side>,
 }
 impl Puzzle {
-    fn new(n: i16, d: u16) -> Self {
-        if d == 1 {
-            // i think multi_cartesian_product returns empty iterator for the empty product
+    fn new(shape: &[Cut]) -> Self {
+        // if d == 1 {
+        //     // i think multi_cartesian_product returns empty iterator for the empty product
 
-            return Puzzle {
-                n,
-                d,
-                stickers: HashMap::from_iter([
-                    (vec![Coord(-n)], Side(!0)),
-                    (vec![Coord(n)], Side(0)),
-                ]),
-            };
-        }
+        //     return Puzzle {
+        //         n,
+        //         d,
+        //         stickers: HashMap::from_iter([
+        //             (vec![Coord(-n)], Side(!0)),
+        //             (vec![Coord(n)], Side(0)),
+        //         ]),
+        //     };
+        // }
 
+        // let mut stickers = HashMap::new();
+        // for (side, coords) in [n, -n].into_iter().cartesian_product(
+        //     (0..d - 1)
+        //         .map(|_| (-n + 1..n).step_by(2))
+        //         .multi_cartesian_product(),
+        // ) {
+        //     let mut pos = vec![side];
+        //     pos.extend(&coords);
+        //     for f in 0..(d as i16) {
+        //         // TODO: this is bad
+        //         stickers.insert(
+        //             pos.clone().into_iter().map(Coord).collect(),
+        //             if side >= 0 { Side(f) } else { Side(!f) },
+        //         );
+        //         pos.rotate_right(1);
+        //     }
+        // }
         let mut stickers = HashMap::new();
-        for (side, coords) in [n, -n].into_iter().cartesian_product(
-            (0..d - 1)
-                .map(|_| (-n + 1..n).step_by(2))
-                .multi_cartesian_product(),
-        ) {
-            let mut pos = vec![side];
-            pos.extend(&coords);
-            for f in 0..(d as i16) {
-                // TODO: this is bad
-                stickers.insert(
-                    pos.clone().into_iter().map(Coord).collect(),
-                    if side >= 0 { Side(f) } else { Side(!f) },
-                );
-                pos.rotate_right(1);
-            }
+        for pos in Cut::positions(&shape) {
+            let Some(axis) = pos
+                .iter()
+                .zip(shape)
+                .position(|(coord, cut)| coord.0.abs() == cut.0)
+            else {
+                // it was an internal position
+                continue;
+            };
+            let side = if pos[axis].0 >= 0 {
+                Side(axis as i16)
+            } else {
+                Side(!(axis as i16))
+            };
+            stickers.insert(pos, side);
         }
-        Puzzle { n, d, stickers }
+        Puzzle {
+            shape: shape.to_vec(),
+            stickers,
+        }
     }
 
     fn is_solved(&self) -> bool {
-        let mut pos_colors: Vec<Option<Side>> = vec![None; self.d as usize];
-        let mut neg_colors: Vec<Option<Side>> = vec![None; self.d as usize];
+        // TODO: something here is broken
+        let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len() as usize];
+        let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len() as usize];
         for (pos, color) in &self.stickers {
-            assert!(pos.iter().filter(|c| c.0.abs() == self.n).count() == 1);
-            let axis = pos.iter().position(|c| c.0.abs() == self.n).unwrap();
+            assert!(
+                pos.iter()
+                    .zip(&self.shape)
+                    .filter(|(coord, cut)| coord.0.abs() == cut.0)
+                    .count()
+                    == 1,
+                "each sticker must be on exactly one side"
+            );
+            let axis = pos
+                .iter()
+                .zip(&self.shape)
+                .position(|(coord, cut)| coord.0.abs() == cut.0)
+                .unwrap();
             let side = if pos[axis].0 >= 0 {
                 Side(axis as i16)
             } else {
@@ -442,11 +468,12 @@ impl Puzzle {
                     //     layers.0[pos[(!side.0) as usize].0 as usize]
                     // } {
                     if if side.0 >= 0 {
-                        ((self.n - 1)..=self.n).contains(&pos[side.0 as usize].0)
+                        ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                            .contains(&pos[side.0 as usize].0)
                     } else {
-                        ((-self.n)..=(1 - self.n)).contains(&pos[(!side.0) as usize].0)
+                        ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
+                            .contains(&pos[(!side.0) as usize].0)
                     } {
-                        println!("here");
                         // TODO: compute to_pos instead of from_pos???
                         let mut from_pos = pos.clone();
                         from_pos[from.0 as usize] = pos[to.0 as usize];
@@ -485,8 +512,8 @@ struct Layout2d {
     mapping: HashMap<Vec<Coord>, (usize, usize)>,
 }
 impl Layout2d {
-    fn new(n: i16, d: u16) -> Self {
-        if d == 0 {
+    fn new(shape: &[Cut]) -> Self {
+        if shape.is_empty() {
             return Self {
                 width: 1,
                 height: 1,
@@ -505,14 +532,15 @@ impl Layout2d {
         //         ),
         //     };
         // }
-        let horizontal = d % 2 == 1;
-        let lower = Self::new(n, d - 1);
+        let horizontal = shape.len() % 2 == 1;
+        let lower = Self::new(&shape[..shape.len() - 1]);
         let mut ret = Self {
             width: 0,
             height: 0,
             mapping: HashMap::new(),
         };
-        for (i, new_coord) in Cut(n).coords().enumerate() {
+        let last = *shape.last().unwrap();
+        for (i, new_coord) in last.coords().enumerate() {
             let mut lower = lower.clone();
             lower.mapping = lower
                 .mapping
@@ -523,14 +551,22 @@ impl Layout2d {
                 })
                 .collect();
 
-            if new_coord.0.abs() == n {
-                lower
-                    .mapping
-                    .retain(|pos, _xy| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1);
+            if new_coord.0.abs() == last.0 {
+                lower.mapping.retain(|pos, _xy| {
+                    pos.iter()
+                        .zip(shape)
+                        .filter(|(coord, cut)| coord.0.abs() == cut.0)
+                        .count()
+                        <= 1
+                });
                 // TODO: possibly shrink margins
             } else {
                 debug_assert!(lower.mapping.iter().all(|(pos, _xy)| {
-                    pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1
+                    pos.iter()
+                        .zip(shape)
+                        .filter(|(coord, cut)| coord.0.abs() == cut.0)
+                        .count()
+                        <= 1
                 }));
             }
             let shift = if horizontal {
@@ -538,7 +574,11 @@ impl Layout2d {
             } else {
                 lower.height
             };
-            let shift = if d > 2 { (shift + 1) * i } else { shift * i };
+            let shift = if shape.len() > 2 {
+                (shift + 1) * i
+            } else {
+                shift * i
+            };
             if horizontal {
                 lower.right(shift);
                 // assert!(ret.x_hi <= lower.x_lo);
@@ -589,40 +629,47 @@ struct App {
     turn_builder: TurnBuilder,
 }
 impl App {
-    fn new(n: i16, d: u16) -> Self {
-        const MAX_DIM: u16 = 10;
-        const MAX_LAYERS: i16 = 19;
-        assert!(d > 0, "dimension should be greater than 0");
+    const MAX_DIM: usize = 10;
+    const MAX_LAYERS: i16 = 19;
+    fn new(shape: &[Cut]) -> Self {
+        assert!(shape.len() > 0, "dimension should be greater than 0");
         assert!(
-            d <= MAX_DIM,
-            "dimension should be less than or equal to {MAX_DIM}"
+            shape.len() <= Self::MAX_DIM,
+            "dimension should be less than or equal to {}",
+            Self::MAX_DIM
         );
-        assert!(n > 0, "side should be greater than 0");
         assert!(
-            n <= MAX_LAYERS,
-            "side should be less than or equal to {MAX_LAYERS}"
+            shape.iter().all(|cut| cut.0 > 0),
+            "side should be greater than 0"
+        );
+        assert!(
+            shape.iter().all(|cut| cut.0 <= Self::MAX_LAYERS),
+            "side should be less than or equal to {}",
+            Self::MAX_LAYERS
         );
         // let start = std::time::Instant::now();
-        let puzzle = Puzzle::new(n, d);
+        let puzzle = Puzzle::new(shape);
         // println!("puzzle gen in {:?}", start.elapsed());
 
         // let start = std::time::Instant::now();
-        let layout = Layout::TwoD(Layout2d::new(n, d));
+        let layout = Layout::TwoD(Layout2d::new(shape));
         // println!("layout gen in {:?}", start.elapsed());
 
         let mut side_positions = HashMap::new();
-        for side in 0..d as i16 {
+        for (axis, cut) in shape.iter().enumerate() {
             {
                 // positive
-                let mut pos = vec![if n % 2 == 1 { Coord(0) } else { Coord(1) }; d as usize];
-                pos[side as usize] = Coord(n - 1);
-                side_positions.insert(Side(side), pos);
+                let mut pos =
+                    vec![if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) }; shape.len()];
+                pos[axis] = Coord(cut.0 - 1);
+                side_positions.insert(Side(axis as i16), pos);
             }
             {
                 // negative
-                let mut pos = vec![if n % 2 == 1 { Coord(0) } else { Coord(1) }; d as usize];
-                pos[side as usize] = Coord(1 - n);
-                side_positions.insert(Side(!side), pos);
+                let mut pos =
+                    vec![if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) }; shape.len()];
+                pos[axis] = Coord(1 - cut.0);
+                side_positions.insert(Side(!(axis as i16)), pos);
             }
         }
         // println!("width: {}, height: {}", layout.width, layout.height);
@@ -637,7 +684,7 @@ impl App {
             puzzle,
             layout,
             side_positions,
-            turn_builder: TurnBuilder::new(n, d),
+            turn_builder: TurnBuilder::new(shape),
         }
     }
 
@@ -656,7 +703,7 @@ impl App {
             buf[i + 2] = color.b();
         };
 
-        for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
+        for pos in Cut::positions(&self.puzzle.shape) {
             draw_sticker(&pos, egui::Color32::GRAY);
         }
         for (pos, side) in &self.puzzle.stickers {
@@ -722,7 +769,7 @@ impl eframe::App for App {
                         let draw_sticker = |pos: &[Coord], color: egui::Color32| {
                             painter.rect_filled(rect_of_sticker(pos), 0.0, color);
                         };
-                        for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
+                        for pos in Cut::positions(&self.puzzle.shape) {
                             draw_sticker(&pos, egui::Color32::DARK_GRAY);
                         }
                         for (pos, side) in &self.puzzle.stickers {
@@ -768,7 +815,7 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    // let app = App::new(3, 10);
+    // let app = App::new(&[Cut(3), Cut(3), Cut(3)]);
     // app.render_png("render.png");
     // panic!();
 
@@ -776,7 +823,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "rectangle",
         native_options,
-        Box::new(|_cc| Ok(Box::new(App::new(3, 3)))),
+        Box::new(|_cc| Ok(Box::new(App::new(&[Cut(3), Cut(3), Cut(3)])))),
     )
 }
 
@@ -786,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_is_solved() {
-        let mut puzzle = Puzzle::new(3, 3);
+        let mut puzzle = Puzzle::new(&[Cut(3), Cut(3), Cut(3)]);
         assert!(puzzle.is_solved());
         puzzle
             .turn(&Turn::Puzzle {
