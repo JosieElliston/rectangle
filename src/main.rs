@@ -17,17 +17,49 @@ impl Side {
         }
     }
 
-    fn grip_key(self) -> char {
-        todo!()
+    const POS_KEYS: &[char] = &['f', 'e', 'r', 't', 'v', 'y', 'n', 'q', ',', '/'];
+    const NEG_KEYS: &[char] = &['s', 'd', 'w', 'g', 'c', 'h', 'b', 'a', 'm', '.'];
+    fn side_key(self) -> char {
+        if self.0 >= 0 {
+            Self::POS_KEYS[self.0 as usize]
+        } else {
+            Self::NEG_KEYS[(!self.0) as usize]
+        }
     }
-    // TODO: better name
-    fn grip_key_right(self) -> char {
-        todo!()
+    fn try_from_side_key(d: u16, key: egui::Key) -> Option<Self> {
+        let key = key.symbol_or_name();
+        if key.len() != 1 {
+            return None;
+        }
+        let key = key.to_lowercase().chars().next().unwrap();
+        Self::POS_KEYS[..d as usize]
+            .iter()
+            .position(|&k| k == key)
+            .map(|i| Self(i as i16))
+            .or_else(|| {
+                Self::NEG_KEYS[..d as usize]
+                    .iter()
+                    .position(|&k| k == key)
+                    .map(|i| Self(!(i as i16)))
+            })
     }
-    // const POS_KEYS: &[char] = &['f', 'e', 'r', 't', 'v', 'y', 'n', 'q', ',', '/'];
-    // const NEG_KEYS: &[char] = &['s', 'd', 'w', 'g', 'c', 'h', 'b', 'a', 'm', '.'];
-    // const POS_KEYS_RIGHT: &[char] = &['l', 'i', 'j', '.', 'p', '['];
-    // const NEG_KEYS_RIGHT: &[char] = &['u', ',', 'o', 'k', 'l', ';'];
+
+    const AXIS_KEYS: &[char] = &['k', 'j', 'l', 'i', 'u', 'o', 'p', ';', '[', '\''];
+    fn axis_key(self) -> char {
+        assert!(self.0 >= 0);
+        Self::AXIS_KEYS[self.0 as usize]
+    }
+    fn try_from_axis_key(d: u16, key: egui::Key) -> Option<Self> {
+        let key = key.symbol_or_name();
+        if key.len() != 1 {
+            return None;
+        }
+        let key = key.to_lowercase().chars().next().unwrap();
+        Self::AXIS_KEYS[..d as usize]
+            .iter()
+            .position(|&k| k == key)
+            .map(|i| Self(i as i16))
+    }
 
     fn color(self) -> egui::Color32 {
         // TODO: make this const
@@ -110,13 +142,22 @@ impl Cut {
 
 #[derive(Clone, Debug)]
 struct LayerMask(Vec<bool>);
+impl LayerMask {
+    fn new(n: i16) -> Self {
+        let mut ret = vec![false; (n as usize - 1) / 2];
+        if n > 1 {
+            ret[0] = true;
+        }
+        LayerMask(ret)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct SideTurn {
+    layers: LayerMask,
     side: Side,
     from: Side,
     to: Side,
-    layers: LayerMask,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +170,158 @@ struct PuzzleTurn {
 enum Turn {
     Side(SideTurn),
     Puzzle(PuzzleTurn),
+}
+
+#[derive(Clone, Debug)]
+enum TurnBuilder {
+    Side {
+        n: i16,
+        d: u16,
+        layers: LayerMask,
+        side: Option<Side>,
+        from: Option<Side>,
+        // to: Option<Side>,
+    },
+    Puzzle {
+        n: i16,
+        d: u16,
+        from: Option<Side>,
+        // to: Option<Side>,
+    },
+}
+impl TurnBuilder {
+    fn new(n: i16, d: u16) -> Self {
+        TurnBuilder::Side {
+            n,
+            d,
+            layers: LayerMask::new(n),
+            side: None,
+            from: None,
+        }
+    }
+
+    /// returns Some if the turn is complete
+    fn update(&mut self, key: egui::Key) -> Option<Turn> {
+        if key == egui::Key::Escape {
+            *self = TurnBuilder::new(self.n(), self.d());
+            return None;
+        }
+        if key == egui::Key::X {
+            *self = TurnBuilder::Puzzle {
+                n: self.n(),
+                d: self.d(),
+                from: None,
+                // to: None,
+            };
+            return None;
+        }
+        if let Ok(key) = key.name().parse::<usize>() {
+            if key == 0 {
+                return None;
+            }
+            if key > (self.n() as usize - 1) / 2 {
+                return None;
+            }
+            match self {
+                TurnBuilder::Side { layers, .. } => {
+                    layers.0[key - 1] = !layers.0[key - 1];
+                }
+                TurnBuilder::Puzzle { n, d, .. } => {
+                    *self = TurnBuilder::Side {
+                        n: *n,
+                        d: *d,
+                        layers: LayerMask::new(*n),
+                        side: None,
+                        from: None,
+                        // to: None,
+                    };
+                }
+            }
+            return None;
+        }
+        if let Some(s) = Side::try_from_side_key(self.d(), key) {
+            match self {
+                TurnBuilder::Side {
+                    n,
+                    d,
+                    layers,
+                    side,
+                    from,
+                    // to,
+                } => {
+                    *side = Some(s);
+                    *from = None;
+                    // *to = None;
+                }
+                TurnBuilder::Puzzle { n, d, .. } => {
+                    *self = TurnBuilder::Side {
+                        n: *n,
+                        d: *d,
+                        layers: LayerMask::new(*n),
+                        side: Some(s),
+                        from: None,
+                        // to: None,
+                    };
+                }
+            }
+            return None;
+        }
+        match self {
+            TurnBuilder::Side {
+                n,
+                d,
+                side,
+                from,
+                // to,
+                layers,
+            } => {
+                if let Some(s) = side {
+                    if let Some(f) = from {
+                        if let Some(t) = Side::try_from_axis_key(*d, key) {
+                            let ret = Some(Turn::Side(SideTurn {
+                                side: *s,
+                                from: *f,
+                                to: t,
+                                layers: layers.clone(),
+                            }));
+                            *from = None;
+                            // *to = None;
+                            return ret;
+                        }
+                    } else {
+                        *from = Side::try_from_axis_key(*d, key);
+                    }
+                }
+            }
+            TurnBuilder::Puzzle { n, d, from } => {
+                if let Some(f) = from {
+                    if let Some(t) = Side::try_from_axis_key(*d, key) {
+                        let ret = Some(Turn::Puzzle(PuzzleTurn { from: *f, to: t }));
+                        *from = None;
+                        // *to = None;
+                        return ret;
+                    }
+                } else {
+                    *from = Side::try_from_axis_key(*d, key);
+                }
+            }
+        }
+        None
+    }
+
+    // TODO: these are used for evil
+    fn n(&self) -> i16 {
+        match self {
+            TurnBuilder::Side { n, .. } => *n,
+            TurnBuilder::Puzzle { n, .. } => *n,
+        }
+    }
+    fn d(&self) -> u16 {
+        match self {
+            TurnBuilder::Side { d, .. } => *d,
+            TurnBuilder::Puzzle { d, .. } => *d,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +365,10 @@ impl Puzzle {
         }
         Puzzle { n, d, stickers }
     }
+
+    fn turn(&mut self, turn: Turn) {
+        println!("TODO");
+    }
 }
 
 /// mapping from Pos to (x, y) coordinates
@@ -185,7 +382,7 @@ struct Layout2d {
 impl Layout2d {
     fn new(n: i16, d: u16) -> Self {
         if d == 0 {
-            return Layout2d {
+            return Self {
                 width: 1,
                 height: 1,
                 mapping: HashMap::from_iter([(vec![], (0, 0))]),
@@ -205,7 +402,7 @@ impl Layout2d {
         // }
         let horizontal = d % 2 == 1;
         let lower = Self::new(n, d - 1);
-        let mut ret = Layout2d {
+        let mut ret = Self {
             width: 0,
             height: 0,
             mapping: HashMap::new(),
@@ -278,6 +475,7 @@ struct App {
     layout: Layout2d,
     /// where the labels for the sides go
     side_positions: HashMap<Side, Vec<Coord>>,
+    turn_builder: TurnBuilder,
 }
 impl App {
     fn new(n: i16, d: u16) -> Self {
@@ -293,9 +491,14 @@ impl App {
             n <= MAX_LAYERS,
             "side should be less than or equal to {MAX_LAYERS}"
         );
-
+        let start = std::time::Instant::now();
         let puzzle = Puzzle::new(n, d);
+        println!("puzzle gen in {:?}", start.elapsed());
+
+        let start = std::time::Instant::now();
         let layout = Layout2d::new(n, d);
+        println!("layout gen in {:?}", start.elapsed());
+
         let mut side_positions = HashMap::new();
         for side in 0..d as i16 {
             {
@@ -323,10 +526,12 @@ impl App {
             puzzle,
             layout,
             side_positions,
+            turn_builder: TurnBuilder::new(n, d),
         }
     }
 
     fn render_png(&self, path: &str) {
+        let start = std::time::Instant::now();
         let mut buf = vec![0; self.layout.width * self.layout.height * 3];
 
         let mut draw_sticker = |pos: &[Coord], color: egui::Color32| {
@@ -343,7 +548,9 @@ impl App {
         for (pos, side) in &self.puzzle.stickers {
             draw_sticker(pos, side.color());
         }
+        println!("buf gen in {:?}", start.elapsed());
 
+        let start = std::time::Instant::now();
         image::save_buffer(
             path,
             &buf,
@@ -351,7 +558,8 @@ impl App {
             self.layout.height as _,
             image::ColorType::Rgb8,
         )
-        .unwrap()
+        .unwrap();
+        println!("image save in {:?}", start.elapsed());
     }
 }
 impl eframe::App for App {
@@ -360,6 +568,25 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                ctx.input(|i| {
+                    for event in i.events.iter() {
+                        if let egui::Event::Key {
+                            key,
+                            physical_key,
+                            pressed,
+                            repeat,
+                            modifiers,
+                        } = event
+                        {
+                            if *pressed && !repeat {
+                                if let Some(turn) = self.turn_builder.update(*key) {
+                                    self.puzzle.turn(turn);
+                                }
+                            }
+                        }
+                    }
+                });
+
                 // let dt = ctx.input(|input_state| input_state.stable_dt);
                 // // println!("dt: {:?}", dt);
                 // let scale = ui.available_rect_before_wrap().size().min_elem();
@@ -381,7 +608,6 @@ impl eframe::App for App {
                     )
                 };
                 let draw_sticker = |pos: &[Coord], color: egui::Color32| {
-                    let (x, y) = self.layout.mapping[pos];
                     painter.rect_filled(rect_of_sticker(pos), 0.0, color);
                 };
                 for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
@@ -390,16 +616,36 @@ impl eframe::App for App {
                 for (pos, side) in &self.puzzle.stickers {
                     draw_sticker(pos, side.color());
                 }
+
+                // TODO: fancy text sizing
+                let render_axis_keys = match self.turn_builder {
+                    TurnBuilder::Side { side, .. } => side.is_some(),
+                    TurnBuilder::Puzzle { .. } => true,
+                };
                 for (side, pos) in &self.side_positions {
-                    // TODO: fancy text sizing
+                    if render_axis_keys && side.0 < 0 {
+                        continue;
+                    }
                     painter.text(
                         rect_of_sticker(pos).center(),
                         egui::Align2::CENTER_CENTER,
-                        side.name().to_string(),
+                        if render_axis_keys {
+                            side.axis_key().to_string()
+                        } else {
+                            side.side_key().to_string()
+                        },
                         egui::TextStyle::Monospace.resolve(&ctx.style()),
                         egui::Color32::LIGHT_GRAY,
                     );
                 }
+
+                painter.text(
+                    egui::Pos2::new(10.0, ui.available_height() - 10.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    format!("{:?}", self.turn_builder),
+                    egui::TextStyle::Monospace.resolve(&ctx.style()),
+                    egui::Color32::LIGHT_GRAY,
+                );
             });
     }
 }
@@ -408,10 +654,11 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
+    let app = App::new(3, 10);
+    app.render_png("render.png");
+    panic!();
+
     let native_options = eframe::NativeOptions::default();
-    // let app = App::new(3, 4);
-    // app.render_png("render.png");
-    // panic!();
     eframe::run_native(
         "rectangle",
         native_options,
