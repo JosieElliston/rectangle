@@ -62,30 +62,29 @@ impl Side {
     }
 
     fn color(self) -> egui::Color32 {
-        // TODO: make this const
         let pos_colors: &[egui::Color32] = &[
-            egui::Color32::from_hex("#ff0000").unwrap(),
-            egui::Color32::from_hex("#ffffff").unwrap(),
-            egui::Color32::from_hex("#00ff00").unwrap(),
-            egui::Color32::from_hex("#ff00ff").unwrap(),
-            egui::Color32::from_hex("#0aaa85").unwrap(),
-            egui::Color32::from_hex("#774811").unwrap(),
-            egui::Color32::from_hex("#f49fef").unwrap(),
-            egui::Color32::from_hex("#b29867").unwrap(),
-            egui::Color32::from_hex("#9cf542").unwrap(),
-            egui::Color32::from_hex("#078517").unwrap(),
+            egui::Color32::from_rgb(255, 0, 0),
+            egui::Color32::from_rgb(255, 255, 255),
+            egui::Color32::from_rgb(0, 255, 0),
+            egui::Color32::from_rgb(255, 0, 255),
+            egui::Color32::from_rgb(10, 170, 133),
+            egui::Color32::from_rgb(119, 72, 17),
+            egui::Color32::from_rgb(244, 159, 239),
+            egui::Color32::from_rgb(178, 152, 103),
+            egui::Color32::from_rgb(156, 245, 66),
+            egui::Color32::from_rgb(7, 133, 23),
         ];
         let neg_colors: &[egui::Color32] = &[
-            egui::Color32::from_hex("#ff8000").unwrap(),
-            egui::Color32::from_hex("#ffff00").unwrap(),
-            egui::Color32::from_hex("#0080ff").unwrap(),
-            egui::Color32::from_hex("#8f10ea").unwrap(),
-            egui::Color32::from_hex("#7daa0a").unwrap(),
-            egui::Color32::from_hex("#6d4564").unwrap(),
-            egui::Color32::from_hex("#d4a94e").unwrap(),
-            egui::Color32::from_hex("#b27967").unwrap(),
-            egui::Color32::from_hex("#42d4f5").unwrap(),
-            egui::Color32::from_hex("#2f2fbd").unwrap(),
+            egui::Color32::from_rgb(255, 128, 0),
+            egui::Color32::from_rgb(255, 255, 0),
+            egui::Color32::from_rgb(0, 128, 255),
+            egui::Color32::from_rgb(143, 16, 234),
+            egui::Color32::from_rgb(125, 170, 10),
+            egui::Color32::from_rgb(109, 69, 100),
+            egui::Color32::from_rgb(212, 169, 78),
+            egui::Color32::from_rgb(178, 121, 103),
+            egui::Color32::from_rgb(66, 212, 245),
+            egui::Color32::from_rgb(47, 47, 189),
         ];
         if self.0 >= 0 {
             pos_colors[self.0 as usize]
@@ -491,13 +490,13 @@ impl App {
             n <= MAX_LAYERS,
             "side should be less than or equal to {MAX_LAYERS}"
         );
-        let start = std::time::Instant::now();
+        // let start = std::time::Instant::now();
         let puzzle = Puzzle::new(n, d);
-        println!("puzzle gen in {:?}", start.elapsed());
+        // println!("puzzle gen in {:?}", start.elapsed());
 
-        let start = std::time::Instant::now();
+        // let start = std::time::Instant::now();
         let layout = Layout2d::new(n, d);
-        println!("layout gen in {:?}", start.elapsed());
+        // println!("layout gen in {:?}", start.elapsed());
 
         let mut side_positions = HashMap::new();
         for side in 0..d as i16 {
@@ -654,9 +653,9 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    let app = App::new(3, 10);
-    app.render_png("render.png");
-    panic!();
+    // let app = App::new(3, 10);
+    // app.render_png("render.png");
+    // panic!();
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
