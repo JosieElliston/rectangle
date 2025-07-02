@@ -1,6 +1,9 @@
+use egui::ahash::{HashMap, HashMapExt, HashSet};
 use itertools::Itertools;
-use std::{collections::HashMap, iter::once};
+use std::iter::once;
 
+/// sides related by ! are opposite
+/// rather than by -, so that we can 0 index
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Side(i16);
 impl Side {
@@ -51,14 +54,47 @@ impl Side {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Axis(Side); // but side must be nonnegative
 
+/// lives in ±n and -n+1 to n-1 every other
+/// eg for n=3, it would be in [-3, -2, 0, 2, 3]
+/// eg for n=4, it would be in [-4, -3, -1, 1, 3, 4]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Coord(i16);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Pos(Vec<Coord>);
-
 // #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-// struct Shape(Vec<>);
+// struct Pos(Vec<Coord>);
+
+/// A shape is a \[Cut], so a 2x3x4 would be a \[Cut(2), Cut(3), Cut(4)]
+/// lives in [1, 2, 3, ...]
+// TODO: better name
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cut(i16);
+impl Cut {
+    /// all possible coords along this axis
+    fn coords(self) -> impl Iterator<Item = Coord> {
+        once(-self.0)
+            .chain((-self.0 + 1..self.0).step_by(2))
+            .chain(once(self.0))
+            .map(Coord)
+    }
+
+    /// gives all positions for this shape, including internal ones
+    // fn positions(shape: &[Cut]) -> impl Iterator<Item = Vec<Coord>> {
+    fn positions(n: i16, d: u16) -> impl Iterator<Item = Vec<Coord>> {
+        (0..d)
+            .map(|_| {
+                once(-n)
+                    .chain((-n + 1..n).step_by(2))
+                    .chain(once(n))
+                    .map(Coord)
+            })
+            .multi_cartesian_product()
+            // discard ones that are on multiple sides, because that's impossible
+            .filter(move |pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
+    }
+}
+
+// #[derive(Clone, Debug, PartialEq, Eq)]
+// struct Shape(Vec<Cut>);
 
 #[derive(Clone, Debug)]
 struct LayerMask(Vec<bool>);
@@ -87,8 +123,6 @@ enum Turn {
 struct Puzzle {
     n: i16,
     d: u16,
-    // map from coordinate vector (only contains -n+1, n-1 every other, and ±n)
-    // to side (sides related by ! are opposite)
     // #[serde(with = "serde_map")]
     stickers: HashMap<Vec<Coord>, Side>,
 }
@@ -100,10 +134,9 @@ impl Puzzle {
             return Puzzle {
                 n,
                 d,
-                stickers: HashMap::from([
-                    (vec![Coord(-n)], Side(!0)),
-                    (vec![Coord(n)], Side(0)),
-                ]),
+                stickers: HashMap::from_iter(
+                    [(vec![Coord(-n)], Side(!0)), (vec![Coord(n)], Side(0))].into_iter(),
+                ),
             };
         }
 
@@ -118,7 +151,7 @@ impl Puzzle {
             for f in 0..(d as i16) {
                 // TODO: this is bad
                 stickers.insert(
-                    (pos.clone().into_iter().map(Coord).collect()),
+                    pos.clone().into_iter().map(Coord).collect(),
                     if side >= 0 { Side(f) } else { Side(!f) },
                 );
                 pos.rotate_right(1);
@@ -273,9 +306,9 @@ impl LayoutOld {
             LayoutOld {
                 width: 1,
                 height: 1,
-                points: HashMap::from([((0, 0), vec![])]),
+                points: HashMap::from_iter([((0, 0), vec![])].into_iter()),
                 keybind_hints: if n > 2 {
-                    HashMap::from([((0, 0), None)])
+                    HashMap::from_iter([((0, 0), None)].into_iter())
                 } else {
                     HashMap::new()
                 },
@@ -320,21 +353,6 @@ impl LayoutOld {
             }
         }
     }
-}
-
-// TODO: this should be owned by Shape
-fn all_positions(n: i16, d: u16) -> impl Iterator<Item = Vec<Coord>> {
-    (0..d)
-        .map(|_| {
-            once(-n)
-                .chain((-n + 1..n).step_by(2))
-                .chain(once(n))
-                .map(Coord)
-        })
-        .multi_cartesian_product()
-        // discard invalid positions
-        // ie ones that are on multiple sides
-        .filter(move |pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
 }
 
 // /// mapping from Pos to [0.0, 1.0]^2
@@ -388,109 +406,192 @@ fn all_positions(n: i16, d: u16) -> impl Iterator<Item = Vec<Coord>> {
 //         }
 //     }
 // }
+#[derive(Clone, Debug)]
 struct Layout2d {
-    width_lo: i16,
-    width_hi: i16,
-    height_lo: i16,
-    height_hi: i16,
+    x_lo: i16,
+    x_hi: i16,
+    y_lo: i16,
+    y_hi: i16,
     mapping: HashMap<Vec<Coord>, (i16, i16)>,
 }
 impl Layout2d {
     fn new(n: i16, d: u16) -> Self {
-        // let layout = LayoutOld::make_layout(n, d, false, false);
-        // // let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
-        // let mut mapping = HashMap::new();
-        // for ((x, y), pos) in layout.points {
-        //     mapping.insert(Pos(pos.into_iter().map(Coord).collect()), (x as _, (2 * y) as _));
-        // }
-        // Layout2d {
-        //     width: layout.width,
-        //     height: layout.height,
-        //     mapping,
-        // }
-        let mut mapping = HashMap::new();
-        let mut width_lo = i16::MAX;
-        let mut width_hi = i16::MIN;
-        let mut height_lo = i16::MAX;
-        let mut height_hi = i16::MIN;
-        for pos in (0..d)
-            .map(|_| {
-                once(-n)
-                    .chain((-n + 1..n).step_by(2))
-                    .chain(once(n))
-                    .map(Coord)
-            })
-            .multi_cartesian_product()
-            // discard invalid positions
-            // ie ones that are on multiple sides
-            .filter(|pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
-        {
-            let (x, y) = Self::get(n, &pos);
-            mapping.insert(pos, (x, y));
-            width_lo = width_lo.min(x);
-            width_hi = width_hi.max(x);
-            height_lo = height_lo.min(y);
-            height_hi = height_hi.max(y);
-        }
-        Layout2d {
-            width_lo,
-            width_hi,
-            height_lo,
-            height_hi,
-            mapping,
-        }
-    }
-
-    fn get(n: i16, pos: &[Coord]) -> (i16, i16) {
-        if pos.len() == 0 {
+        if d == 0 {
             panic!("idk");
         }
-        if pos.len() == 1 {
-            return (
-                once(-n)
-                    .chain((-n + 1..n).step_by(2))
-                    .chain(once(n))
-                    .map(Coord)
-                    .position(|c| c == pos[0])
-                    .unwrap() as _,
-                0,
-            );
+        if d == 1 {
+            return Layout2d {
+                x_lo: 0,
+                x_hi: n + 1,
+                y_lo: 0,
+                y_hi: 0,
+                mapping: HashMap::from_iter(
+                    Cut(n)
+                        .coords()
+                        .enumerate()
+                        .map(|(i, c)| (vec![c], (i as i16, 0_i16))),
+                ),
+            };
         }
-        let horizontal = pos.len() % 2 == 1;
-        let (lower_x, lower_y) = Self::get(n, &pos[..(pos.len() - 1)]);
-        let pos_last = *pos.last().unwrap();
-        if pos_last.0.abs() == n {
-            // cap
-            todo!()
-        } else {
-            // asdf
-            if horizontal {
-                (lower_x, lower_y)
+        let horizontal = d % 2 == 1;
+        let lower = Self::new(n, d - 1);
+        let mut ret = Layout2d {
+            x_lo: 0,
+            x_hi: 0,
+            y_lo: 0,
+            y_hi: 0,
+            mapping: HashMap::new(),
+        };
+        for (i, new_coord) in Cut(n).coords().enumerate() {
+            let mut lower = lower.clone();
+            lower.mapping = lower
+                .mapping
+                .into_iter()
+                .map(|(mut pos, xy)| {
+                    pos.push(new_coord);
+                    (pos, xy)
+                })
+                .collect();
+
+            if new_coord.0.abs() == n {
+                lower
+                    .mapping
+                    .retain(|pos, _xy| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1);
+                // TODO: possibly shrink margins
             } else {
-                (lower_x, lower_y)
+                debug_assert!(lower.mapping.iter().all(|(pos, _xy)| {
+                    pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1
+                }));
             }
+            if horizontal {
+                lower.right(lower.width() * i as i16);
+                assert!(ret.x_hi <= lower.x_lo);
+            } else {
+                lower.down(lower.height() * i as i16);
+                assert!(ret.y_hi <= lower.y_lo);
+            }
+            ret.union(lower);
         }
+        ret
     }
 
-    fn width(&self) -> u16 {
-        (self.width_hi - self.width_lo + 1) as u16
-    }
-    fn height(&self) -> u16 {
-        (self.height_hi - self.height_lo + 1) as u16
+    fn union(&mut self, other: Self) {
+        assert!(self.x_lo <= self.x_hi);
+        assert!(self.y_lo <= self.y_hi);
+        assert!(other.x_lo <= other.x_hi);
+        assert!(other.y_lo <= other.y_hi);
+        self.x_lo = self.x_lo.min(other.x_lo);
+        self.x_hi = self.x_hi.max(other.x_hi);
+        self.y_lo = self.y_lo.min(other.y_lo);
+        self.y_hi = self.y_hi.max(other.y_hi);
+        let self_len = self.mapping.len();
+        let other_len = other.mapping.len();
+        self.mapping.extend(other.mapping);
+        assert_eq!(self.mapping.len(), self_len + other_len);
     }
 
-    // fn map_egui(&self, rect: egui::Rect, pos: &[Coord]) -> egui::Pos2 {
-    //     let scale = f32::max(
-    //         rect.width() / self.width() as f32,
-    //         rect.height() / self.height() as f32,
+    fn right(&mut self, shift: i16) {
+        self.mapping.values_mut().for_each(|(x, _y)| {
+            *x += shift;
+        });
+        self.x_lo += shift;
+        self.x_hi += shift;
+    }
+
+    fn down(&mut self, shift: i16) {
+        self.mapping.values_mut().for_each(|(_x, y)| {
+            *y += shift;
+        });
+        self.y_lo += shift;
+        self.y_hi += shift;
+    }
+
+    // fn new(n: i16, d: u16) -> Self {
+    //     // let layout = LayoutOld::make_layout(n, d, false, false);
+    //     // // let sticker_size = 1.0 / layout.width.max(layout.height) as f32;
+    //     // let mut mapping = HashMap::new();
+    //     // for ((x, y), pos) in layout.points {
+    //     //     mapping.insert(Pos(pos.into_iter().map(Coord).collect()), (x as _, (2 * y) as _));
+    //     // }
+    //     // Layout2d {
+    //     //     width: layout.width,
+    //     //     height: layout.height,
+    //     //     mapping,
+    //     // }
+    //     let mut x_lo = i16::MAX;
+    //     let mut x_hi = i16::MIN;
+    //     let mut y_lo = i16::MAX;
+    //     let mut y_hi = i16::MIN;
+    //     let mut mapping = HashMap::new();
+    //     for pos in (0..d)
+    //         .map(|_| {
+    //             once(-n)
+    //                 .chain((-n + 1..n).step_by(2))
+    //                 .chain(once(n))
+    //                 .map(Coord)
+    //         })
+    //         .multi_cartesian_product()
+    //         // discard invalid positions
+    //         // ie ones that are on multiple sides
+    //         .filter(|pos| pos.iter().filter(|coord| coord.0.abs() == n).count() <= 1)
+    //     {
+    //         let (x, y) = Self::get(n, &pos);
+    //         mapping.insert(pos, (x, y));
+    //         x_lo = x_lo.min(x);
+    //         x_hi = x_hi.max(x);
+    //         y_lo = y_lo.min(y);
+    //         y_hi = y_hi.max(y);
+    //     }
+    //     assert!(
+    //         !mapping.is_empty(),
+    //         "this might be ok, but the min and max will be wrong"
     //     );
-    //     let (x, y) = self.mapping[pos];
-    //     rect.left_top()
-    //         + egui::Vec2::new(
-    //             (x - self.width_lo) as f32 / self.width() as f32,
-    //             (y - self.height_lo) as f32 / self.height() as f32,
-    //         ) * scale
+    //     Layout2d {
+    //         x_lo,
+    //         x_hi,
+    //         y_lo,
+    //         y_hi,
+    //         mapping,
+    //     }
     // }
+
+    // fn get(n: i16, pos: &[Coord]) -> (i16, i16) {
+    //     if pos.len() == 0 {
+    //         panic!("idk");
+    //     }
+    //     if pos.len() == 1 {
+    //         return (
+    //             once(-n)
+    //                 .chain((-n + 1..n).step_by(2))
+    //                 .chain(once(n))
+    //                 .map(Coord)
+    //                 .position(|c| c == pos[0])
+    //                 .unwrap() as _,
+    //             0,
+    //         );
+    //     }
+    //     let horizontal = pos.len() % 2 == 1;
+    //     let (lower_x, lower_y) = Self::get(n, &pos[..(pos.len() - 1)]);
+    //     let pos_last = *pos.last().unwrap();
+    //     if pos_last.0.abs() == n {
+    //         // cap
+    //         todo!()
+    //     } else {
+    //         // asdf
+    //         if horizontal {
+    //             (lower_x, lower_y)
+    //         } else {
+    //             (lower_x, lower_y)
+    //         }
+    //     }
+    // }
+
+    fn width(&self) -> i16 {
+        self.x_hi - self.x_lo + 1
+    }
+    fn height(&self) -> i16 {
+        self.y_hi - self.y_lo + 1
+    }
 }
 
 struct App {
@@ -501,6 +602,17 @@ impl App {
     fn new(n: i16, d: u16) -> Self {
         let puzzle = Puzzle::new(n, d);
         let layout = Layout2d::new(n, d);
+        println!(
+            "x_lo: {}, x_hi: {}, y_lo: {}, y_hi: {}",
+            layout.x_lo, layout.x_hi, layout.y_lo, layout.y_hi
+        );
+        for (pos, xy) in &layout.mapping {
+            println!(
+                "{:?} -> {:?}",
+                pos.iter().map(|c| c.0).collect::<Vec<_>>(),
+                xy,
+            );
+        }
         App { puzzle, layout }
     }
 }
@@ -518,11 +630,11 @@ impl eframe::App for App {
                 // let sticker_size =
                 //     ui.available_rect_before_wrap().width() / self.layout.width() as f32;
                 let rect = ui.available_rect_before_wrap();
-                let scale = f32::max(
+                let scale = f32::min(
                     rect.width() / self.layout.width() as f32,
                     rect.height() / self.layout.height() as f32,
                 );
-                for (pos, side) in &self.puzzle.stickers {
+                let draw_sticker = |pos: &[Coord], color: egui::Color32| {
                     // let (x, y) = self.layout.mapping.get(pos).unwrap();
                     // let rect = Rect::from_min_size(
                     //     pos.to_vec2() * square_size,
@@ -532,32 +644,36 @@ impl eframe::App for App {
                     let (x, y) = self.layout.mapping[pos];
                     painter.rect_filled(
                         egui::Rect::from_min_size(
-                            rect.left_top()
-                                + egui::Vec2::new(
-                                    (x - self.layout.width_lo) as f32 / self.layout.width() as f32,
-                                    (y - self.layout.height_lo) as f32
-                                        / self.layout.height() as f32,
-                                ) * scale,
+                            egui::Pos2::new(
+                                (x - self.layout.x_lo) as f32 ,
+                                (y - self.layout.y_lo) as f32 ,
+                            ) * scale,
                             scale * egui::Vec2::new(1.0, 1.0),
                         ),
                         0.0,
-                        side.color(),
+                        color,
                     );
+                };
+                for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
+                    draw_sticker(&pos, egui::Color32::GRAY);
+                }
+                for (pos, side) in &self.puzzle.stickers {
+                    draw_sticker(pos, side.color());
                 }
             });
     }
 }
 
 fn main() -> eframe::Result {
-    // std::env::set_var("RUST_BACKTRACE", "1");
+    // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
     let native_options = eframe::NativeOptions::default();
 
     eframe::run_native(
-        "particle life",
+        "rectangle",
         native_options,
         // Box::new(|cc| Ok(Box::new(App::new(cc, 6, 100)))),
-        Box::new(|cc| Ok(Box::new(App::new(3, 3)))),
+        Box::new(|cc| Ok(Box::new(App::new(3, 5)))),
     )
 }
