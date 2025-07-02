@@ -575,9 +575,15 @@ impl Layout2d {
     }
 }
 
+enum Layout {
+    // OneD(Layout1d),
+    TwoD(Layout2d),
+    // ThreeD(Layout3d),
+}
+
 struct App {
     puzzle: Puzzle,
-    layout: Layout2d,
+    layout: Layout,
     /// where the labels for the sides go
     side_positions: HashMap<Side, Vec<Coord>>,
     turn_builder: TurnBuilder,
@@ -601,7 +607,7 @@ impl App {
         // println!("puzzle gen in {:?}", start.elapsed());
 
         // let start = std::time::Instant::now();
-        let layout = Layout2d::new(n, d);
+        let layout = Layout::TwoD(Layout2d::new(n, d));
         // println!("layout gen in {:?}", start.elapsed());
 
         let mut side_positions = HashMap::new();
@@ -636,12 +642,15 @@ impl App {
     }
 
     fn render_png(&self, path: &str) {
+        let Layout::TwoD(layout) = &self.layout else {
+            panic!("render_png only works for Layout2d");
+        };
         let start = std::time::Instant::now();
-        let mut buf = vec![0; self.layout.width * self.layout.height * 3];
+        let mut buf = vec![0; layout.width * layout.height * 3];
 
         let mut draw_sticker = |pos: &[Coord], color: egui::Color32| {
-            let (x, y) = self.layout.mapping[pos];
-            let i = ((self.layout.height - y - 1) * self.layout.width + x) * 3;
+            let (x, y) = layout.mapping[pos];
+            let i = ((layout.height - y - 1) * layout.width + x) * 3;
             buf[i] = color.r();
             buf[i + 1] = color.g();
             buf[i + 2] = color.b();
@@ -659,8 +668,8 @@ impl App {
         image::save_buffer(
             path,
             &buf,
-            self.layout.width as _,
-            self.layout.height as _,
+            layout.width as _,
+            layout.height as _,
             image::ColorType::Rgb8,
         )
         .unwrap();
@@ -694,63 +703,63 @@ impl eframe::App for App {
 
                 // let dt = ctx.input(|input_state| input_state.stable_dt);
                 // // println!("dt: {:?}", dt);
-                // let scale = ui.available_rect_before_wrap().size().min_elem();
-                // let scale = ui.available_rect_before_wrap().width();
-                let painter = ui.painter();
-                // let sticker_size =
-                //     ui.available_rect_before_wrap().width() / self.layout.width() as f32;
-                let rect = ui.available_rect_before_wrap();
-                let scale = f32::min(
-                    rect.width() / self.layout.width as f32,
-                    rect.height() / self.layout.height as f32,
-                );
-                // TODO: pixel alignment
-                let rect_of_sticker = |pos: &[Coord]| {
-                    let (x, y) = self.layout.mapping[pos];
-                    egui::Rect::from_min_size(
-                        egui::Pos2::new(x as f32, (self.layout.height - y - 1) as f32) * scale,
-                        scale * egui::Vec2::new(1.0, 1.0),
-                    )
-                };
-                let draw_sticker = |pos: &[Coord], color: egui::Color32| {
-                    painter.rect_filled(rect_of_sticker(pos), 0.0, color);
-                };
-                for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
-                    draw_sticker(&pos, egui::Color32::DARK_GRAY);
-                }
-                for (pos, side) in &self.puzzle.stickers {
-                    draw_sticker(pos, side.color());
-                }
+                match &self.layout {
+                    Layout::TwoD(layout) => {
+                        let painter = ui.painter();
+                        let rect = ui.available_rect_before_wrap();
+                        let scale = f32::min(
+                            rect.width() / layout.width as f32,
+                            rect.height() / layout.height as f32,
+                        );
+                        // TODO: pixel alignment
+                        let rect_of_sticker = |pos: &[Coord]| {
+                            let (x, y) = layout.mapping[pos];
+                            egui::Rect::from_min_size(
+                                egui::Pos2::new(x as f32, (layout.height - y - 1) as f32) * scale,
+                                scale * egui::Vec2::new(1.0, 1.0),
+                            )
+                        };
+                        let draw_sticker = |pos: &[Coord], color: egui::Color32| {
+                            painter.rect_filled(rect_of_sticker(pos), 0.0, color);
+                        };
+                        for pos in Cut::positions(self.puzzle.n, self.puzzle.d) {
+                            draw_sticker(&pos, egui::Color32::DARK_GRAY);
+                        }
+                        for (pos, side) in &self.puzzle.stickers {
+                            draw_sticker(pos, side.color());
+                        }
 
-                // TODO: fancy text sizing
-                let render_axis_keys = match self.turn_builder {
-                    TurnBuilder::Side { side, .. } => side.is_some(),
-                    TurnBuilder::Puzzle { .. } => true,
-                };
-                for (side, pos) in &self.side_positions {
-                    if render_axis_keys && side.0 < 0 {
-                        continue;
+                        // TODO: fancy text sizing
+                        let render_axis_keys = match self.turn_builder {
+                            TurnBuilder::Side { side, .. } => side.is_some(),
+                            TurnBuilder::Puzzle { .. } => true,
+                        };
+                        for (side, pos) in &self.side_positions {
+                            if render_axis_keys && side.0 < 0 {
+                                continue;
+                            }
+                            painter.text(
+                                rect_of_sticker(pos).center(),
+                                egui::Align2::CENTER_CENTER,
+                                if render_axis_keys {
+                                    side.axis_key().to_string()
+                                } else {
+                                    side.side_key().to_string()
+                                },
+                                egui::TextStyle::Monospace.resolve(&ctx.style()),
+                                egui::Color32::LIGHT_GRAY,
+                            );
+                        }
                     }
-                    painter.text(
-                        rect_of_sticker(pos).center(),
-                        egui::Align2::CENTER_CENTER,
-                        if render_axis_keys {
-                            side.axis_key().to_string()
-                        } else {
-                            side.side_key().to_string()
-                        },
-                        egui::TextStyle::Monospace.resolve(&ctx.style()),
-                        egui::Color32::LIGHT_GRAY,
-                    );
                 }
 
-                painter.text(
-                    egui::Pos2::new(10.0, ui.available_height() - 10.0),
-                    egui::Align2::LEFT_BOTTOM,
-                    format!("{:?}", self.turn_builder),
-                    egui::TextStyle::Monospace.resolve(&ctx.style()),
-                    egui::Color32::LIGHT_GRAY,
-                );
+                // painter.text(
+                //     egui::Pos2::new(10.0, ui.available_height() - 10.0),
+                //     egui::Align2::LEFT_BOTTOM,
+                //     format!("{:?}", self.turn_builder),
+                //     egui::TextStyle::Monospace.resolve(&ctx.style()),
+                //     egui::Color32::LIGHT_GRAY,
+                // );
             });
     }
 }
