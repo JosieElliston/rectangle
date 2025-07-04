@@ -7,6 +7,10 @@ use std::iter::once;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Side(i16);
 impl Side {
+    fn axis(self) -> Side {
+        Side(self.0.max(!self.0))
+    }
+
     fn name(self) -> char {
         const POS_NAMES: &[char] = &['R', 'U', 'F', 'O', 'A', 'Γ', 'Θ', 'Ξ', 'Σ', 'Ψ'];
         const NEG_NAMES: &[char] = &['L', 'D', 'B', 'I', 'P', 'Δ', 'Λ', 'Π', 'Φ', 'Ω'];
@@ -458,30 +462,103 @@ impl Puzzle {
                     return Err(TurnError::UndefinedPlane);
                 }
                 assert!(from.0 >= 0 && to.0 >= 0);
-                // TODO: i don't think this needs to be a hashmap
-                let mut new_stickers = HashMap::new();
-                for pos in self.stickers.keys() {
-                    // TODO: layer mask
-                    // if if side.0 >= 0 {
-                    //     layers.0[pos[side.0 as usize].0 as usize]
-                    // } else {
-                    //     layers.0[pos[(!side.0) as usize].0 as usize]
-                    // } {
-                    if if side.0 >= 0 {
-                        ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                            .contains(&pos[side.0 as usize].0)
-                    } else {
-                        ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
-                            .contains(&pos[(!side.0) as usize].0)
-                    } {
-                        // TODO: compute to_pos instead of from_pos???
-                        let mut from_pos = pos.clone();
-                        from_pos[from.0 as usize] = pos[to.0 as usize];
-                        from_pos[to.0 as usize] = -pos[from.0 as usize];
-                        new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+                // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
+                if self.shape[from.axis().0 as usize] == self.shape[to.axis().0 as usize] {
+                    // TODO: i don't think this needs to be a hashmap
+                    let mut new_stickers = HashMap::new();
+                    for pos in self.stickers.keys() {
+                        // TODO: layer mask
+                        // if if side.0 >= 0 {
+                        //     layers.0[pos[side.0 as usize].0 as usize]
+                        // } else {
+                        //     layers.0[pos[(!side.0) as usize].0 as usize]
+                        // } {
+                        if if side.0 >= 0 {
+                            ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                                .contains(&pos[side.0 as usize].0)
+                        } else {
+                            ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
+                                .contains(&pos[(!side.0) as usize].0)
+                        } {
+                            // TODO: compute to_pos instead of from_pos???
+                            let mut from_pos = pos.clone();
+                            from_pos[from.0 as usize] = pos[to.0 as usize];
+                            from_pos[to.0 as usize] = -pos[from.0 as usize];
+                            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+                        }
                     }
+                    self.stickers.extend(new_stickers);
+                } else {
+                    let mut new_stickers = HashMap::new();
+                    for pos in self.stickers.keys() {
+                        // TODO: layer mask
+                        // if if side.0 >= 0 {
+                        //     layers.0[pos[side.0 as usize].0 as usize]
+                        // } else {
+                        //     layers.0[pos[(!side.0) as usize].0 as usize]
+                        // } {
+                        if if side.0 >= 0 {
+                            ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                                .contains(&pos[side.0 as usize].0)
+                        } else {
+                            ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
+                                .contains(&pos[(!side.0) as usize].0)
+                        } {
+                            // TODO: compute to_pos instead of from_pos???
+                            let mut from_pos = pos.clone();
+                            from_pos[from.0 as usize] = -pos[from.0 as usize];
+                            from_pos[to.0 as usize] = -pos[to.0 as usize];
+                            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+                        }
+                    }
+                    self.stickers.extend(new_stickers);
+                    // // TODO: i don't think this needs to be a hashmap
+                    // let mut weird_map = HashMap::new();
+                    // for pos in self.stickers.keys() {
+                    //     // TODO: layer mask
+                    //     // if if side.0 >= 0 {
+                    //     //     layers.0[pos[side.0 as usize].0 as usize]
+                    //     // } else {
+                    //     //     layers.0[pos[(!side.0) as usize].0 as usize]
+                    //     // } {
+                    //     if if side.0 >= 0 {
+                    //         ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                    //             .contains(&pos[side.0 as usize].0)
+                    //     } else {
+                    //         ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
+                    //             .contains(&pos[(!side.0) as usize].0)
+                    //     } {
+                    //         // TODO: compute to_pos instead of from_pos???
+                    //         let mut from_pos = pos.clone();
+                    //         from_pos[from.0 as usize] = pos[to.0 as usize];
+                    //         from_pos[to.0 as usize] = -pos[from.0 as usize];
+                    //         weird_map.insert(pos.clone(), from_pos);
+                    //     }
+                    // }
+                    // let mut new_stickers = HashMap::new();
+                    // for pos in self.stickers.keys() {
+                    //     // TODO: layer mask
+                    //     // if if side.0 >= 0 {
+                    //     //     layers.0[pos[side.0 as usize].0 as usize]
+                    //     // } else {
+                    //     //     layers.0[pos[(!side.0) as usize].0 as usize]
+                    //     // } {
+                    //     if if side.0 >= 0 {
+                    //         ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                    //             .contains(&pos[side.0 as usize].0)
+                    //     } else {
+                    //         ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
+                    //             .contains(&pos[(!side.0) as usize].0)
+                    //     } {
+                    //         // TODO: compute to_pos instead of from_pos???
+                    //         let mut from_pos = pos.clone();
+                    //         from_pos[from.0 as usize] = pos[to.0 as usize];
+                    //         from_pos[to.0 as usize] = -pos[from.0 as usize];
+                    //         // new_stickers.insert(pos.clone(), self.stickers[&weird_map[&from_pos]]);
+                    //     }
+                    // }
+                    // self.stickers.extend(new_stickers);
                 }
-                self.stickers.extend(new_stickers);
 
                 Ok(())
             }
@@ -632,7 +709,7 @@ impl App {
     const MAX_DIM: usize = 10;
     const MAX_LAYERS: i16 = 19;
     fn new(shape: &[Cut]) -> Self {
-        assert!(shape.len() > 0, "dimension should be greater than 0");
+        assert!(!shape.is_empty(), "dimension should be greater than 0");
         assert!(
             shape.len() <= Self::MAX_DIM,
             "dimension should be less than or equal to {}",
@@ -647,6 +724,9 @@ impl App {
             "side should be less than or equal to {}",
             Self::MAX_LAYERS
         );
+        // println!("{:?}", Cut::positions(shape).collect::<Vec<_>>());
+        // panic!();
+
         // let start = std::time::Instant::now();
         let puzzle = Puzzle::new(shape);
         // println!("puzzle gen in {:?}", start.elapsed());
@@ -654,20 +734,35 @@ impl App {
         // let start = std::time::Instant::now();
         let layout = Layout::TwoD(Layout2d::new(shape));
         // println!("layout gen in {:?}", start.elapsed());
+        // if let Layout::TwoD(layout) = &layout {
+        //     for (pos, xy) in layout.mapping.iter() {
+        //         println!(
+        //             "{:?} -> {:?}",
+        //             pos.iter().map(|c| c.0).collect::<Vec<_>>(),
+        //             xy,
+        //         );
+        //     }
+        // } else {
+        //     unreachable!()
+        // }
 
         let mut side_positions = HashMap::new();
         for (axis, cut) in shape.iter().enumerate() {
             {
                 // positive
-                let mut pos =
-                    vec![if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) }; shape.len()];
+                let mut pos = shape
+                    .iter()
+                    .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
+                    .collect::<Vec<_>>();
                 pos[axis] = Coord(cut.0 - 1);
                 side_positions.insert(Side(axis as i16), pos);
             }
             {
                 // negative
-                let mut pos =
-                    vec![if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) }; shape.len()];
+                let mut pos = shape
+                    .iter()
+                    .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
+                    .collect::<Vec<_>>();
                 pos[axis] = Coord(1 - cut.0);
                 side_positions.insert(Side(!(axis as i16)), pos);
             }
@@ -815,7 +910,7 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    // let app = App::new(&[Cut(3), Cut(3), Cut(3)]);
+    let app = App::new(&[3, 3, 4].map(Cut));
     // app.render_png("render.png");
     // panic!();
 
@@ -823,7 +918,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "rectangle",
         native_options,
-        Box::new(|_cc| Ok(Box::new(App::new(&[Cut(3), Cut(3), Cut(3)])))),
+        Box::new(|_cc| Ok(Box::new(app))),
     )
 }
 
