@@ -139,11 +139,12 @@ impl Cut {
     }
 
     /// gives all positions for this shape, including internal ones
-    fn positions(shape: &[Cut]) -> impl Iterator<Item = Vec<Coord>> {
+    fn positions(shape: &[Cut]) -> impl Iterator<Item = Box<[Coord]>> {
         shape
             .iter()
             .map(|cut| cut.coords().collect::<Vec<_>>())
             .multi_cartesian_product()
+            .map(Vec::into_boxed_slice)
             // discard ones that are on multiple sides, because that's impossible
             .filter(move |pos| {
                 pos.iter()
@@ -213,21 +214,21 @@ impl Turn {
 #[derive(Clone, Debug)]
 enum TurnBuilder {
     Side {
-        shape: Vec<Cut>,
+        shape: Box<[Cut]>,
         layers: LayerMask,
         side: Option<Side>,
         from: Option<Side>,
         // to: Option<Side>,
     },
     Puzzle {
-        shape: Vec<Cut>,
+        shape: Box<[Cut]>,
         from: Option<Side>,
     },
 }
 impl TurnBuilder {
     fn new(shape: &[Cut]) -> Self {
         TurnBuilder::Side {
-            shape: shape.to_vec(),
+            shape: shape.into(),
             layers: LayerMask::new(),
             side: None,
             from: None,
@@ -235,6 +236,7 @@ impl TurnBuilder {
     }
 
     /// returns Some if the turn is complete
+    #[inline(never)]
     fn update(&mut self, key: egui::Key) -> Option<Turn> {
         if key == egui::Key::Escape {
             *self = TurnBuilder::new(self.shape());
@@ -242,7 +244,7 @@ impl TurnBuilder {
         }
         if key == egui::Key::X {
             *self = TurnBuilder::Puzzle {
-                shape: self.shape().to_vec(),
+                shape: self.shape().into(),
                 from: None,
             };
             return None;
@@ -330,8 +332,8 @@ impl TurnBuilder {
     // TODO: these are used for evil
     fn shape(&self) -> &[Cut] {
         match self {
-            TurnBuilder::Side { shape, .. } => &shape,
-            TurnBuilder::Puzzle { shape, .. } => &shape,
+            TurnBuilder::Side { shape, .. } => shape,
+            TurnBuilder::Puzzle { shape, .. } => shape,
         }
     }
 }
@@ -347,9 +349,10 @@ enum TurnError {
 struct Puzzle {
     shape: Vec<Cut>,
     // #[serde(with = "serde_map")]
-    stickers: HashMap<Vec<Coord>, Side>,
+    stickers: HashMap<Box<[Coord]>, Side>,
 }
 impl Puzzle {
+    #[inline(never)]
     fn new(shape: &[Cut]) -> Self {
         // if d == 1 {
         //     // i think multi_cartesian_product returns empty iterator for the empty product
@@ -382,7 +385,7 @@ impl Puzzle {
         //     }
         // }
         let mut stickers = HashMap::new();
-        for pos in Cut::positions(&shape) {
+        for pos in Cut::positions(shape) {
             let Some(axis) = pos
                 .iter()
                 .zip(shape)
@@ -404,10 +407,11 @@ impl Puzzle {
         }
     }
 
+    #[inline(never)]
     fn is_solved(&self) -> bool {
         // TODO: something here is broken
-        let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len() as usize];
-        let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len() as usize];
+        let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
+        let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
         for (pos, color) in &self.stickers {
             assert!(
                 pos.iter()
@@ -444,6 +448,7 @@ impl Puzzle {
         true
     }
 
+    #[inline(never)]
     fn turn(&mut self, turn: &Turn) -> Result<(), TurnError> {
         match turn {
             Turn::Side {
@@ -463,102 +468,36 @@ impl Puzzle {
                 }
                 assert!(from.0 >= 0 && to.0 >= 0);
                 // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
-                if self.shape[from.axis().0 as usize] == self.shape[to.axis().0 as usize] {
-                    // TODO: i don't think this needs to be a hashmap
-                    let mut new_stickers = HashMap::new();
-                    for pos in self.stickers.keys() {
-                        // TODO: layer mask
-                        // if if side.0 >= 0 {
-                        //     layers.0[pos[side.0 as usize].0 as usize]
-                        // } else {
-                        //     layers.0[pos[(!side.0) as usize].0 as usize]
-                        // } {
-                        if if side.0 >= 0 {
-                            ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                                .contains(&pos[side.0 as usize].0)
-                        } else {
-                            ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
-                                .contains(&pos[(!side.0) as usize].0)
-                        } {
-                            // TODO: compute to_pos instead of from_pos???
-                            let mut from_pos = pos.clone();
+
+                // TODO: i don't think this needs to be a hashmap
+                let mut new_stickers = HashMap::new();
+                for pos in self.stickers.keys() {
+                    // TODO: layer mask
+                    // if if side.0 >= 0 {
+                    //     layers.0[pos[side.0 as usize].0 as usize]
+                    // } else {
+                    //     layers.0[pos[(!side.0) as usize].0 as usize]
+                    // } {
+                    if if side.0 >= 0 {
+                        ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
+                            .contains(&pos[side.0 as usize].0)
+                    } else {
+                        ((-self.shape[!side.0 as usize].0)..=(1 - self.shape[!side.0 as usize].0))
+                            .contains(&pos[(!side.0) as usize].0)
+                    } {
+                        // TODO: compute to_pos instead of from_pos???
+                        let mut from_pos = pos.clone();
+                        if self.shape[from.axis().0 as usize] == self.shape[to.axis().0 as usize] {
                             from_pos[from.0 as usize] = pos[to.0 as usize];
                             from_pos[to.0 as usize] = -pos[from.0 as usize];
-                            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
-                        }
-                    }
-                    self.stickers.extend(new_stickers);
-                } else {
-                    let mut new_stickers = HashMap::new();
-                    for pos in self.stickers.keys() {
-                        // TODO: layer mask
-                        // if if side.0 >= 0 {
-                        //     layers.0[pos[side.0 as usize].0 as usize]
-                        // } else {
-                        //     layers.0[pos[(!side.0) as usize].0 as usize]
-                        // } {
-                        if if side.0 >= 0 {
-                            ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                                .contains(&pos[side.0 as usize].0)
                         } else {
-                            ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
-                                .contains(&pos[(!side.0) as usize].0)
-                        } {
-                            // TODO: compute to_pos instead of from_pos???
-                            let mut from_pos = pos.clone();
                             from_pos[from.0 as usize] = -pos[from.0 as usize];
                             from_pos[to.0 as usize] = -pos[to.0 as usize];
-                            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
                         }
+                        new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
                     }
-                    self.stickers.extend(new_stickers);
-                    // // TODO: i don't think this needs to be a hashmap
-                    // let mut weird_map = HashMap::new();
-                    // for pos in self.stickers.keys() {
-                    //     // TODO: layer mask
-                    //     // if if side.0 >= 0 {
-                    //     //     layers.0[pos[side.0 as usize].0 as usize]
-                    //     // } else {
-                    //     //     layers.0[pos[(!side.0) as usize].0 as usize]
-                    //     // } {
-                    //     if if side.0 >= 0 {
-                    //         ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                    //             .contains(&pos[side.0 as usize].0)
-                    //     } else {
-                    //         ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
-                    //             .contains(&pos[(!side.0) as usize].0)
-                    //     } {
-                    //         // TODO: compute to_pos instead of from_pos???
-                    //         let mut from_pos = pos.clone();
-                    //         from_pos[from.0 as usize] = pos[to.0 as usize];
-                    //         from_pos[to.0 as usize] = -pos[from.0 as usize];
-                    //         weird_map.insert(pos.clone(), from_pos);
-                    //     }
-                    // }
-                    // let mut new_stickers = HashMap::new();
-                    // for pos in self.stickers.keys() {
-                    //     // TODO: layer mask
-                    //     // if if side.0 >= 0 {
-                    //     //     layers.0[pos[side.0 as usize].0 as usize]
-                    //     // } else {
-                    //     //     layers.0[pos[(!side.0) as usize].0 as usize]
-                    //     // } {
-                    //     if if side.0 >= 0 {
-                    //         ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                    //             .contains(&pos[side.0 as usize].0)
-                    //     } else {
-                    //         ((-self.shape[side.0 as usize].0)..=(1 - self.shape[side.0 as usize].0))
-                    //             .contains(&pos[(!side.0) as usize].0)
-                    //     } {
-                    //         // TODO: compute to_pos instead of from_pos???
-                    //         let mut from_pos = pos.clone();
-                    //         from_pos[from.0 as usize] = pos[to.0 as usize];
-                    //         from_pos[to.0 as usize] = -pos[from.0 as usize];
-                    //         // new_stickers.insert(pos.clone(), self.stickers[&weird_map[&from_pos]]);
-                    //     }
-                    // }
-                    // self.stickers.extend(new_stickers);
                 }
+                self.stickers.extend(new_stickers);
 
                 Ok(())
             }
@@ -583,18 +522,19 @@ impl Puzzle {
 /// mapping from Pos to (x, y) coordinates
 /// +x is right, +y is up
 #[derive(Clone, Debug)]
-struct Layout2d {
+struct Layout2dBuilder {
     width: usize,
     height: usize,
-    mapping: HashMap<Vec<Coord>, (usize, usize)>,
+    mapping: Vec<(Vec<Coord>, (usize, usize))>,
 }
-impl Layout2d {
+impl Layout2dBuilder {
+    #[inline(never)]
     fn new(shape: &[Cut]) -> Self {
         if shape.is_empty() {
             return Self {
                 width: 1,
                 height: 1,
-                mapping: HashMap::from_iter([(vec![], (0, 0))]),
+                mapping: vec![(Vec::new(), (0, 0))],
             };
         }
         // if d == 1 {
@@ -614,7 +554,7 @@ impl Layout2d {
         let mut ret = Self {
             width: 0,
             height: 0,
-            mapping: HashMap::new(),
+            mapping: Vec::new(),
         };
         let last = *shape.last().unwrap();
         for (i, new_coord) in last.coords().enumerate() {
@@ -629,7 +569,7 @@ impl Layout2d {
                 .collect();
 
             if new_coord.0.abs() == last.0 {
-                lower.mapping.retain(|pos, _xy| {
+                lower.mapping.retain(|(pos, _xy)| {
                     pos.iter()
                         .zip(shape)
                         .filter(|(coord, cut)| coord.0.abs() == cut.0)
@@ -678,17 +618,37 @@ impl Layout2d {
     }
 
     fn right(&mut self, shift: usize) {
-        self.mapping.values_mut().for_each(|(x, _y)| {
+        self.mapping.iter_mut().for_each(|(_pos, (x, _y))| {
             *x += shift;
         });
         self.width += shift;
     }
 
     fn down(&mut self, shift: usize) {
-        self.mapping.values_mut().for_each(|(_x, y)| {
+        self.mapping.iter_mut().for_each(|(_pos, (_x, y))| {
             *y += shift;
         });
         self.height += shift;
+    }
+}
+struct Layout2d {
+    width: usize,
+    height: usize,
+    mapping: HashMap<Box<[Coord]>, (usize, usize)>,
+}
+impl Layout2d {
+    #[inline(never)]
+    fn new(shape: &[Cut]) -> Self {
+        let builder = Layout2dBuilder::new(shape);
+        Layout2d {
+            width: builder.width,
+            height: builder.height,
+            mapping: builder
+                .mapping
+                .into_iter()
+                .map(|(pos, xy)| (pos.into(), xy))
+                .collect(),
+        }
     }
 }
 
@@ -702,12 +662,14 @@ struct App {
     puzzle: Puzzle,
     layout: Layout,
     /// where the labels for the sides go
-    side_positions: HashMap<Side, Vec<Coord>>,
+    side_positions: HashMap<Side, Box<[Coord]>>,
     turn_builder: TurnBuilder,
 }
 impl App {
     const MAX_DIM: usize = 10;
     const MAX_LAYERS: i16 = 19;
+
+    #[inline(never)]
     fn new(shape: &[Cut]) -> Self {
         assert!(!shape.is_empty(), "dimension should be greater than 0");
         assert!(
@@ -727,13 +689,13 @@ impl App {
         // println!("{:?}", Cut::positions(shape).collect::<Vec<_>>());
         // panic!();
 
-        // let start = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let puzzle = Puzzle::new(shape);
-        // println!("puzzle gen in {:?}", start.elapsed());
+        println!("puzzle gen in {:?}", start.elapsed());
 
-        // let start = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let layout = Layout::TwoD(Layout2d::new(shape));
-        // println!("layout gen in {:?}", start.elapsed());
+        println!("layout gen in {:?}", start.elapsed());
         // if let Layout::TwoD(layout) = &layout {
         //     for (pos, xy) in layout.mapping.iter() {
         //         println!(
@@ -745,27 +707,30 @@ impl App {
         // } else {
         //     unreachable!()
         // }
-
-        let mut side_positions = HashMap::new();
-        for (axis, cut) in shape.iter().enumerate() {
-            {
-                // positive
-                let mut pos = shape
-                    .iter()
-                    .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
-                    .collect::<Vec<_>>();
-                pos[axis] = Coord(cut.0 - 1);
-                side_positions.insert(Side(axis as i16), pos);
+        #[inline(never)]
+        fn get_side_positions(shape: &[Cut]) -> HashMap<Side, Box<[Coord]>> {
+            let mut side_positions = HashMap::new();
+            for (axis, cut) in shape.iter().enumerate() {
+                {
+                    // positive
+                    let mut pos = shape
+                        .iter()
+                        .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
+                        .collect::<Box<[Coord]>>();
+                    pos[axis] = Coord(cut.0 - 1);
+                    side_positions.insert(Side(axis as i16), pos);
+                }
+                {
+                    // negative
+                    let mut pos = shape
+                        .iter()
+                        .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
+                        .collect::<Box<[Coord]>>();
+                    pos[axis] = Coord(1 - cut.0);
+                    side_positions.insert(Side(!(axis as i16)), pos);
+                }
             }
-            {
-                // negative
-                let mut pos = shape
-                    .iter()
-                    .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
-                    .collect::<Vec<_>>();
-                pos[axis] = Coord(1 - cut.0);
-                side_positions.insert(Side(!(axis as i16)), pos);
-            }
+            side_positions
         }
         // println!("width: {}, height: {}", layout.width, layout.height);
         // for (pos, xy) in &layout.mapping {
@@ -778,11 +743,12 @@ impl App {
         App {
             puzzle,
             layout,
-            side_positions,
+            side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
         }
     }
 
+    #[inline(never)]
     fn render_png(&self, path: &str) {
         let Layout::TwoD(layout) = &self.layout else {
             panic!("render_png only works for Layout2d");
@@ -804,7 +770,7 @@ impl App {
         for (pos, side) in &self.puzzle.stickers {
             draw_sticker(pos, side.color());
         }
-        println!("buf gen in {:?}", start.elapsed());
+        println!("buffer gen in {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
         image::save_buffer(
@@ -910,10 +876,11 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    let app = App::new(&[3, 3, 4].map(Cut));
-    // app.render_png("render.png");
-    // panic!();
+    let app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
+    app.render_png("render.png");
+    panic!();
 
+    let app = App::new(&[3, 3, 4].map(Cut));
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "rectangle",
