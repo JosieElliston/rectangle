@@ -1,68 +1,83 @@
 use egui::ahash::{HashMap, HashMapExt};
 use itertools::Itertools;
+use rand::prelude::*;
 use std::iter::once;
 
-/// sides related by ! are opposite
-/// rather than by -, so that we can 0 index
+/// sides related by ! are opposite,
+/// rather than by -, so that we can 0 index.
+/// lives in -dim..=dim-1
+/// eg for dim=3, it would be in [-3, -2, -1, 0, 1, 2]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct Side(i16);
 impl Side {
-    fn axis(self) -> Side {
-        Side(self.0.max(!self.0))
+    fn new(side: i16) -> Self {
+        debug_assert!(
+            side >= -(App::MAX_DIM as i16) && side < App::MAX_DIM as i16,
+            "side should be in -{}..={}",
+            App::MAX_DIM,
+            App::MAX_DIM - 1
+        );
+        Side(side)
+    }
+
+    /// kinda like abs
+    fn axis(self) -> Axis {
+        Axis(Side(self.0.max(!self.0)))
+    }
+
+    /// checked conversion into axis
+    fn into_axis(self) -> Axis {
+        debug_assert!(self.0 >= 0, "cannot convert negative side into axis");
+        Axis(self)
+    }
+
+    /// checked conversion into usize
+    fn into_usize(self) -> usize {
+        debug_assert!(self.0 >= 0, "cannot convert negative side into usize");
+        self.0 as usize
+    }
+
+    /// maybe the should be called nonnegative,
+    /// but it's still true that Side(0) refers to the positive direction of axis 0
+    fn is_positive(self) -> bool {
+        self.0 >= 0
+    }
+
+    fn get<'a, T>(self, pos: &'a [T], neg: &'a [T]) -> &'a T {
+        if self.is_positive() {
+            &pos[self.0 as usize]
+        } else {
+            &neg[!self.0 as usize]
+        }
     }
 
     fn name(self) -> char {
         const POS_NAMES: &[char] = &['R', 'U', 'F', 'O', 'A', 'Γ', 'Θ', 'Ξ', 'Σ', 'Ψ'];
         const NEG_NAMES: &[char] = &['L', 'D', 'B', 'I', 'P', 'Δ', 'Λ', 'Π', 'Φ', 'Ω'];
-        if self.0 >= 0 {
-            POS_NAMES[self.0 as usize]
-        } else {
-            NEG_NAMES[(!self.0) as usize]
-        }
+        *self.get(POS_NAMES, NEG_NAMES)
     }
 
     const POS_KEYS: &[char] = &['f', 'e', 'r', 't', 'v', 'y', 'n', 'q', ',', '/'];
     const NEG_KEYS: &[char] = &['s', 'd', 'w', 'g', 'c', 'h', 'b', 'a', 'm', '.'];
     fn side_key(self) -> char {
-        if self.0 >= 0 {
-            Self::POS_KEYS[self.0 as usize]
-        } else {
-            Self::NEG_KEYS[(!self.0) as usize]
-        }
+        *self.get(Self::POS_KEYS, Self::NEG_KEYS)
     }
-    fn try_from_side_key(d: u16, key: egui::Key) -> Option<Self> {
+    fn try_from_key(dim: u16, key: egui::Key) -> Option<Self> {
         let key = key.symbol_or_name();
         if key.len() != 1 {
             return None;
         }
         let key = key.to_lowercase().chars().next().unwrap();
-        Self::POS_KEYS[..d as usize]
+        Self::POS_KEYS[..dim as usize]
             .iter()
             .position(|&k| k == key)
             .map(|i| Self(i as i16))
             .or_else(|| {
-                Self::NEG_KEYS[..d as usize]
+                Self::NEG_KEYS[..dim as usize]
                     .iter()
                     .position(|&k| k == key)
                     .map(|i| Self(!(i as i16)))
             })
-    }
-
-    const AXIS_KEYS: &[char] = &['k', 'j', 'l', 'i', 'u', 'o', 'p', ';', '[', '\''];
-    fn axis_key(self) -> char {
-        assert!(self.0 >= 0);
-        Self::AXIS_KEYS[self.0 as usize]
-    }
-    fn try_from_axis_key(d: u16, key: egui::Key) -> Option<Self> {
-        let key = key.symbol_or_name();
-        if key.len() != 1 {
-            return None;
-        }
-        let key = key.to_lowercase().chars().next().unwrap();
-        Self::AXIS_KEYS[..d as usize]
-            .iter()
-            .position(|&k| k == key)
-            .map(|i| Self(i as i16))
     }
 
     fn color(self) -> egui::Color32 {
@@ -90,11 +105,7 @@ impl Side {
             egui::Color32::from_rgb(66, 212, 245),
             egui::Color32::from_rgb(47, 47, 189),
         ];
-        if self.0 >= 0 {
-            pos_colors[self.0 as usize]
-        } else {
-            neg_colors[(!self.0) as usize]
-        }
+        *self.get(pos_colors, neg_colors)
     }
 }
 impl std::ops::Not for Side {
@@ -105,8 +116,59 @@ impl std::ops::Not for Side {
     }
 }
 
+/// like Side, but only for the positive directions
+/// lives in 0..=dim-1
+/// eg for dim=3, it would be in [0, 1, 2]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Axis(Side); // but side must be nonnegative
+struct Axis(Side);
+impl Axis {
+    fn new(axis: i16) -> Self {
+        debug_assert!(
+            axis < App::MAX_DIM as _,
+            "axis should be less than {}",
+            App::MAX_DIM
+        );
+        Axis(Side(axis))
+    }
+
+    fn into_side(self) -> Side {
+        self.0
+    }
+
+    fn into_usize(self) -> usize {
+        self.0.0 as usize
+    }
+
+    fn from_usize(axis: usize) -> Self {
+        Self::new(axis as i16)
+    }
+
+    const AXIS_KEYS: &[char] = &['k', 'j', 'l', 'i', 'u', 'o', 'p', ';', '[', '\''];
+    fn axis_key(self) -> char {
+        Self::AXIS_KEYS[self.into_usize()]
+    }
+    fn try_from_key(dim: u16, key: egui::Key) -> Option<Self> {
+        let key = key.symbol_or_name();
+        if key.len() != 1 {
+            return None;
+        }
+        let key = key.to_lowercase().chars().next().unwrap();
+        Self::AXIS_KEYS[..dim as usize]
+            .iter()
+            .position(|&k| k == key)
+            .map(Self::from_usize)
+    }
+}
+// impl From<Axis> for Side {
+//     fn from(axis: Axis) -> Self {
+//         axis.0
+//     }
+// }
+// impl From<Axis> for usize {
+//     fn from(axis: Axis) -> Self {
+//         axis.0.0 as usize
+//     }
+// }
 
 /// lives in ±n and -n+1 to n-1 every other
 /// eg for n=3, it would be in [-3, -2, 0, 2, 3]
@@ -133,7 +195,7 @@ impl Cut {
     /// all possible coords along this axis
     fn coords(self) -> impl Iterator<Item = Coord> {
         once(-self.0)
-            .chain((-self.0 + 1..self.0).step_by(2))
+            .chain((1 - self.0..self.0).step_by(2))
             .chain(once(self.0))
             .map(Coord)
     }
@@ -159,7 +221,7 @@ impl Cut {
 // #[derive(Clone, Debug, PartialEq, Eq)]
 // struct Shape(Vec<Cut>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct LayerMask(Vec<bool>);
 impl LayerMask {
     // fn new(n: i16) -> Self {
@@ -176,37 +238,48 @@ impl LayerMask {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SideTurn {
+    layers: LayerMask,
+    side: Side,
+    from: Axis,
+    to: Axis,
+}
+impl SideTurn {
+    fn inverse(&self) -> Self {
+        SideTurn {
+            layers: self.layers.clone(),
+            side: self.side,
+            from: self.to,
+            to: self.from,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PuzzleTurn {
+    from: Axis,
+    to: Axis,
+}
+impl PuzzleTurn {
+    fn inverse(&self) -> Self {
+        PuzzleTurn {
+            from: self.to,
+            to: self.from,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Turn {
-    Side {
-        layers: LayerMask,
-        side: Side,
-        from: Side,
-        to: Side,
-    },
-    Puzzle {
-        from: Side,
-        to: Side,
-    },
+    Side(SideTurn),
+    Puzzle(PuzzleTurn),
 }
 impl Turn {
     fn inverse(&self) -> Self {
         match self {
-            Turn::Side {
-                layers,
-                side,
-                from,
-                to,
-            } => Turn::Side {
-                layers: layers.clone(),
-                side: *side,
-                from: *to,
-                to: *from,
-            },
-            Turn::Puzzle { from, to } => Turn::Puzzle {
-                from: *to,
-                to: *from,
-            },
+            Turn::Side(side_turn) => Self::Side(side_turn.inverse()),
+            Turn::Puzzle(puzzle_turn) => Self::Puzzle(puzzle_turn.inverse()),
         }
     }
 }
@@ -217,12 +290,11 @@ enum TurnBuilder {
         shape: Box<[Cut]>,
         layers: LayerMask,
         side: Option<Side>,
-        from: Option<Side>,
-        // to: Option<Side>,
+        from: Option<Axis>,
     },
     Puzzle {
         shape: Box<[Cut]>,
-        from: Option<Side>,
+        from: Option<Axis>,
     },
 }
 impl TurnBuilder {
@@ -268,11 +340,11 @@ impl TurnBuilder {
                 TurnBuilder::Side { layers, .. } => {
                     layers.0[key - 1] = !layers.0[key - 1];
                 }
-                TurnBuilder::Puzzle { shape, .. } => unreachable!(),
+                TurnBuilder::Puzzle { .. } => unreachable!(),
             }
             return None;
         }
-        if let Some(s) = Side::try_from_side_key(self.shape().len() as _, key) {
+        if let Some(s) = Side::try_from_key(self.shape().len() as _, key) {
             match self {
                 TurnBuilder::Side { side, from, .. } => {
                     *side = Some(s);
@@ -299,30 +371,30 @@ impl TurnBuilder {
             } => {
                 if let Some(s) = side {
                     if let Some(f) = from {
-                        if let Some(t) = Side::try_from_axis_key(shape.len() as _, key) {
-                            let ret = Some(Turn::Side {
+                        if let Some(t) = Axis::try_from_key(shape.len() as _, key) {
+                            let ret = Some(Turn::Side(SideTurn {
                                 side: *s,
                                 from: *f,
                                 to: t,
                                 layers: layers.clone(),
-                            });
+                            }));
                             *from = None;
                             return ret;
                         }
                     } else {
-                        *from = Side::try_from_axis_key(shape.len() as _, key);
+                        *from = Axis::try_from_key(shape.len() as _, key);
                     }
                 }
             }
             TurnBuilder::Puzzle { shape, from, .. } => {
                 if let Some(f) = from {
-                    if let Some(t) = Side::try_from_axis_key(shape.len() as _, key) {
-                        let ret = Some(Turn::Puzzle { from: *f, to: t });
+                    if let Some(t) = Axis::try_from_key(shape.len() as _, key) {
+                        let ret = Some(Turn::Puzzle(PuzzleTurn { from: *f, to: t }));
                         *from = None;
                         return ret;
                     }
                 } else {
-                    *from = Side::try_from_axis_key(shape.len() as _, key);
+                    *from = Axis::try_from_key(shape.len() as _, key);
                 }
             }
         }
@@ -345,7 +417,7 @@ enum TurnError {
     // Blocked, // for bandaging
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Puzzle {
     shape: Vec<Cut>,
     // #[serde(with = "serde_map")]
@@ -370,7 +442,7 @@ impl Puzzle {
         // let mut stickers = HashMap::new();
         // for (side, coords) in [n, -n].into_iter().cartesian_product(
         //     (0..d - 1)
-        //         .map(|_| (-n + 1..n).step_by(2))
+        //         .map(|_| (1-n..n).step_by(2))
         //         .multi_cartesian_product(),
         // ) {
         //     let mut pos = vec![side];
@@ -408,12 +480,16 @@ impl Puzzle {
     }
 
     #[inline(never)]
+    fn scramble(&mut self, rng: &mut impl Rng) {
+        todo!()
+    }
+
+    #[inline(never)]
     fn is_solved(&self) -> bool {
-        // TODO: something here is broken
         let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
         let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
         for (pos, color) in &self.stickers {
-            assert!(
+            debug_assert!(
                 pos.iter()
                     .zip(&self.shape)
                     .filter(|(coord, cut)| coord.0.abs() == cut.0)
@@ -431,15 +507,15 @@ impl Puzzle {
             } else {
                 Side(!(axis as i16))
             };
-            let e = if side.0 >= 0 {
-                &mut pos_colors[side.0 as usize]
+            let old_entry = if side.0 >= 0 {
+                &mut pos_colors[axis]
             } else {
-                &mut neg_colors[(!side.0) as usize]
+                &mut neg_colors[axis]
             };
-            match e {
-                None => *e = Some(*color),
-                Some(color) => {
-                    if *color != side {
+            match old_entry {
+                None => *old_entry = Some(*color),
+                Some(old_color) => {
+                    if *old_color != *color {
                         return false;
                     }
                 }
@@ -449,72 +525,78 @@ impl Puzzle {
     }
 
     #[inline(never)]
-    fn turn(&mut self, turn: &Turn) -> Result<(), TurnError> {
-        match turn {
-            Turn::Side {
-                layers,
-                side,
-                from,
-                to,
-            } => {
-                if side == from
-                    || *side == !*from
-                    || side == to
-                    || *side == !*to
-                    || from == to
-                    || *from == !*to
-                {
-                    return Err(TurnError::UndefinedPlane);
-                }
-                assert!(from.0 >= 0 && to.0 >= 0);
+    fn turn_side(&mut self, turn: &SideTurn) -> Result<(), TurnError> {
+        let SideTurn {
+            ref layers,
+            side,
+            from,
+            to,
+        } = *turn;
+        if side == from.into_side()
+            || !side == from.into_side()
+            || side == to.into_side()
+            || !side == to.into_side()
+            || from == to
+        {
+            return Err(TurnError::UndefinedPlane);
+        }
+        // assert!(from.0 >= 0 && to.0 >= 0);
+        // TODO: i don't think this needs to be a hashmap
+        let mut new_stickers = HashMap::new();
+        for pos in self.stickers.keys() {
+            // TODO: layer mask
+            // if if side.0 >= 0 {
+            //     layers.0[pos[side.0 as usize].0 as usize]
+            // } else {
+            //     layers.0[pos[(!side.0) as usize].0 as usize]
+            // } {
+            if if side.is_positive() {
+                ((self.shape[side.into_usize()].0 - 1)..=self.shape[side.into_usize()].0)
+                    .contains(&pos[side.into_usize()].0)
+            } else {
+                ((-self.shape[(!side).into_usize()].0)..=(1 - self.shape[(!side).into_usize()].0))
+                    .contains(&pos[(!side).into_usize()].0)
+            } {
+                // TODO: compute to_pos instead of from_pos???
+                let mut from_pos = pos.clone();
                 // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
-
-                // TODO: i don't think this needs to be a hashmap
-                let mut new_stickers = HashMap::new();
-                for pos in self.stickers.keys() {
-                    // TODO: layer mask
-                    // if if side.0 >= 0 {
-                    //     layers.0[pos[side.0 as usize].0 as usize]
-                    // } else {
-                    //     layers.0[pos[(!side.0) as usize].0 as usize]
-                    // } {
-                    if if side.0 >= 0 {
-                        ((self.shape[side.0 as usize].0 - 1)..=self.shape[side.0 as usize].0)
-                            .contains(&pos[side.0 as usize].0)
-                    } else {
-                        ((-self.shape[!side.0 as usize].0)..=(1 - self.shape[!side.0 as usize].0))
-                            .contains(&pos[(!side.0) as usize].0)
-                    } {
-                        // TODO: compute to_pos instead of from_pos???
-                        let mut from_pos = pos.clone();
-                        if self.shape[from.axis().0 as usize] == self.shape[to.axis().0 as usize] {
-                            from_pos[from.0 as usize] = pos[to.0 as usize];
-                            from_pos[to.0 as usize] = -pos[from.0 as usize];
-                        } else {
-                            from_pos[from.0 as usize] = -pos[from.0 as usize];
-                            from_pos[to.0 as usize] = -pos[to.0 as usize];
-                        }
-                        new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
-                    }
+                if self.shape[from.into_usize()] == self.shape[to.into_usize()] {
+                    from_pos[from.into_usize()] = pos[to.into_usize()];
+                    from_pos[to.into_usize()] = -pos[from.into_usize()];
+                } else {
+                    from_pos[from.into_usize()] = -pos[from.into_usize()];
+                    from_pos[to.into_usize()] = -pos[to.into_usize()];
                 }
-                self.stickers.extend(new_stickers);
-
-                Ok(())
+                new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
             }
-            Turn::Puzzle { from, to } => {
-                if from == to || *from == !*to {
-                    return Err(TurnError::UndefinedPlane);
-                }
-                let mut new_stickers = HashMap::new();
-                for pos in self.stickers.keys() {
-                    let mut from_pos = pos.clone();
-                    from_pos[from.0 as usize] = pos[to.0 as usize];
-                    from_pos[to.0 as usize] = -pos[from.0 as usize];
-                    new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
-                }
-                self.stickers = new_stickers;
-                Ok(())
-            }
+        }
+        self.stickers.extend(new_stickers);
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn turn_puzzle(&mut self, turn: &PuzzleTurn) -> Result<(), TurnError> {
+        let PuzzleTurn { from, to } = *turn;
+        if from == to {
+            return Err(TurnError::UndefinedPlane);
+        }
+        let mut new_stickers = HashMap::new();
+        for pos in self.stickers.keys() {
+            let mut from_pos = pos.clone();
+            from_pos[from.into_usize()] = pos[to.into_usize()];
+            from_pos[to.into_usize()] = -pos[from.into_usize()];
+            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+        }
+        self.stickers = new_stickers;
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn turn(&mut self, turn: &Turn) -> Result<(), TurnError> {
+        // println!("turn: {turn:?}");
+        match turn {
+            Turn::Side(turn) => self.turn_side(turn),
+            Turn::Puzzle(turn) => self.turn_puzzle(turn),
         }
     }
 }
@@ -551,12 +633,13 @@ impl Layout2dBuilder {
         // }
         let horizontal = shape.len() % 2 == 1;
         let lower = Self::new(&shape[..shape.len() - 1]);
+        let last = *shape.last().unwrap();
+        debug_assert_eq!(last.coords().count(), last.0 as usize + 2);
         let mut ret = Self {
             width: 0,
             height: 0,
-            mapping: Vec::new(),
+            mapping: Vec::with_capacity(lower.mapping.len() * (last.0 as usize + 2)),
         };
-        let last = *shape.last().unwrap();
         for (i, new_coord) in last.coords().enumerate() {
             let mut lower = lower.clone();
             lower.mapping = lower
@@ -605,9 +688,11 @@ impl Layout2dBuilder {
             }
             ret.union(lower);
         }
+        assert!(ret.mapping.len() <= lower.mapping.len() * (last.0 as usize + 2));
         ret
     }
 
+    #[inline(never)]
     fn union(&mut self, other: Self) {
         self.width = self.width.max(other.width);
         self.height = self.height.max(other.height);
@@ -617,6 +702,7 @@ impl Layout2dBuilder {
         assert_eq!(self.mapping.len(), self_len + other_len);
     }
 
+    #[inline(never)]
     fn right(&mut self, shift: usize) {
         self.mapping.iter_mut().for_each(|(_pos, (x, _y))| {
             *x += shift;
@@ -624,6 +710,7 @@ impl Layout2dBuilder {
         self.width += shift;
     }
 
+    #[inline(never)]
     fn down(&mut self, shift: usize) {
         self.mapping.iter_mut().for_each(|(_pos, (_x, y))| {
             *y += shift;
@@ -803,6 +890,7 @@ impl eframe::App for App {
                             if *pressed && !repeat {
                                 if let Some(turn) = self.turn_builder.update(*key) {
                                     self.puzzle.turn(&turn);
+                                    println!("solved: {}", self.puzzle.is_solved());
                                 }
                             }
                         }
@@ -843,14 +931,14 @@ impl eframe::App for App {
                             TurnBuilder::Puzzle { .. } => true,
                         };
                         for (side, pos) in &self.side_positions {
-                            if render_axis_keys && side.0 < 0 {
+                            if render_axis_keys && !side.is_positive() {
                                 continue;
                             }
                             painter.text(
                                 rect_of_sticker(pos).center(),
                                 egui::Align2::CENTER_CENTER,
                                 if render_axis_keys {
-                                    side.axis_key().to_string()
+                                    side.into_axis().axis_key().to_string()
                                 } else {
                                     side.side_key().to_string()
                                 },
@@ -876,11 +964,11 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    let app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
-    app.render_png("render.png");
-    panic!();
+    // let app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
+    // app.render_png("render.png");
+    // panic!();
 
-    let app = App::new(&[3, 3, 4].map(Cut));
+    let app = App::new(&[2, 3, 4].map(Cut));
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "rectangle",
@@ -894,25 +982,201 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_solved() {
-        let mut puzzle = Puzzle::new(&[Cut(3), Cut(3), Cut(3)]);
-        assert!(puzzle.is_solved());
-        puzzle
-            .turn(&Turn::Puzzle {
-                from: Side(0),
-                to: Side(1),
+    fn test_inverse() {
+        assert_eq!(
+            Turn::Side(SideTurn {
+                layers: LayerMask::new(),
+                side: Side::new(0),
+                from: Axis::new(1),
+                to: Axis::new(2),
             })
-            .unwrap();
+            .inverse(),
+            Turn::Side(SideTurn {
+                layers: LayerMask::new(),
+                side: Side::new(0),
+                from: Axis::new(2),
+                to: Axis::new(1)
+            })
+        );
+        assert_eq!(
+            Turn::Puzzle(PuzzleTurn {
+                from: Axis::new(0),
+                to: Axis::new(1),
+            })
+            .inverse(),
+            Turn::Puzzle(PuzzleTurn {
+                from: Axis::new(1),
+                to: Axis::new(0),
+            })
+        );
+    }
+
+    #[test]
+    fn test_is_solved() {
+        for dim in 1..=4 {
+            for shape in (1..=dim)
+                .map(|_| (1..=4).map(Cut))
+                .multi_cartesian_product()
+            {
+                assert!(Puzzle::new(&shape).is_solved());
+            }
+        }
+    }
+
+    #[test]
+    fn test_turn_side_333_single() {
+        let mut puzzle = Puzzle::new(&[3, 3, 3].map(Cut));
         assert!(puzzle.is_solved());
-        let turn = Turn::Side {
-            layers: LayerMask(vec![true]),
-            side: Side(0),
-            from: Side(1),
-            to: Side(2),
-        };
+        let turn = Turn::Side(SideTurn {
+            layers: LayerMask::new(),
+            side: Side::new(0),
+            from: Axis::new(1),
+            to: Axis::new(2),
+        });
         puzzle.turn(&turn).unwrap();
         assert!(!puzzle.is_solved());
         puzzle.turn(&turn.inverse()).unwrap();
         assert!(puzzle.is_solved());
+    }
+
+    #[test]
+    fn test_turn_side_333_single_negative() {
+        let mut puzzle = Puzzle::new(&[3, 3, 3].map(Cut));
+        assert!(puzzle.is_solved());
+        let turn = Turn::Side(SideTurn {
+            layers: LayerMask::new(),
+            side: Side::new(!0),
+            from: Axis::new(1),
+            to: Axis::new(2),
+        });
+        puzzle.turn(&turn).unwrap();
+        assert!(!puzzle.is_solved());
+        puzzle.turn(&turn.inverse()).unwrap();
+        assert!(puzzle.is_solved());
+    }
+
+    #[test]
+    fn test_turn_side_333() {
+        let puzzle = Puzzle::new(&[3, 3, 3].map(Cut));
+        let mut new_puzzle = puzzle.clone();
+        for side in -3..3 {
+            for from in 0..3 {
+                if side == from || !side == from {
+                    continue;
+                }
+                for to in 0..3 {
+                    if side == to || !side == to || from == to {
+                        continue;
+                    }
+                    // TODO: test layer mask
+                    let turn = Turn::Side(SideTurn {
+                        layers: LayerMask::new(),
+                        side: Side::new(side),
+                        from: Axis::new(from),
+                        to: Axis::new(to),
+                    });
+                    new_puzzle.turn(&turn).unwrap();
+                    assert!(!new_puzzle.is_solved());
+                    new_puzzle.turn(&turn.inverse()).unwrap();
+                    assert!(new_puzzle.is_solved());
+                    assert_eq!(new_puzzle, puzzle);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_turn_puzzle_333() {
+        let puzzle = Puzzle::new(&[3, 3, 3].map(Cut));
+        let mut new_puzzle = puzzle.clone();
+        for from in 0..3 {
+            for to in 0..3 {
+                if from == to {
+                    continue;
+                }
+                let turn = Turn::Puzzle(PuzzleTurn {
+                    from: Axis::new(from),
+                    to: Axis::new(to),
+                });
+                new_puzzle.turn(&turn).unwrap();
+                assert!(new_puzzle.is_solved());
+                new_puzzle.turn(&turn.inverse()).unwrap();
+                assert!(new_puzzle.is_solved());
+                assert_eq!(new_puzzle, puzzle);
+            }
+        }
+    }
+
+    #[test]
+    fn test_turn_side() {
+        for dim in 1..=4 {
+            for shape in (1..=dim)
+                .map(|_| (2..=4).map(Cut))
+                .multi_cartesian_product()
+            {
+                let puzzle = Puzzle::new(&shape);
+                let mut new_puzzle = puzzle.clone();
+                for side in -dim..dim {
+                    for from in 0..dim {
+                        if side == from || !side == from {
+                            continue;
+                        }
+                        for to in 0..dim {
+                            if side == to || !side == to || from == to {
+                                continue;
+                            }
+                            // TODO: test layer mask
+                            let turn = Turn::Side(SideTurn {
+                                layers: LayerMask::new(),
+                                side: Side::new(side),
+                                from: Axis::new(from),
+                                to: Axis::new(to),
+                            });
+                            new_puzzle.turn(&turn).unwrap();
+                            assert!(!new_puzzle.is_solved());
+                            new_puzzle.turn(&turn.inverse()).unwrap();
+                            assert!(new_puzzle.is_solved());
+                            assert_eq!(new_puzzle, puzzle);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_turn_puzzle() {
+        for dim in 1..=4 {
+            for shape in (1..=dim)
+                .map(|_| (2..=4).map(Cut))
+                .multi_cartesian_product()
+            {
+                println!("shape: {shape:?}");
+                let puzzle = Puzzle::new(&shape);
+                let mut new_puzzle = puzzle.clone();
+                for from in 0..dim {
+                    for to in 0..dim {
+                        if from == to {
+                            continue;
+                        }
+                        let turn = Turn::Puzzle(PuzzleTurn {
+                            from: Axis::new(from),
+                            to: Axis::new(to),
+                        });
+                        println!("from: {from:?}, to: {to:?}");
+                        println!("here 1");
+                        new_puzzle.turn(&turn).unwrap();
+                        println!("here 2");
+                        assert!(new_puzzle.is_solved());
+                        println!("here 3");
+                        new_puzzle.turn(&turn.inverse()).unwrap();
+                        println!("here 4");
+                        assert!(new_puzzle.is_solved());
+                        println!("here 5");
+                        assert_eq!(new_puzzle, puzzle);
+                    }
+                }
+            }
+        }
     }
 }
