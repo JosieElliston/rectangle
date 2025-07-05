@@ -480,11 +480,6 @@ impl Puzzle {
     }
 
     #[inline(never)]
-    fn scramble(&mut self, rng: &mut impl Rng) {
-        todo!()
-    }
-
-    #[inline(never)]
     fn is_solved(&self) -> bool {
         let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
         let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
@@ -524,6 +519,59 @@ impl Puzzle {
         true
     }
 
+    // #[inline(never)]
+    // fn turn_side(&mut self, turn: &SideTurn) -> Result<(), TurnError> {
+    //     let SideTurn {
+    //         ref layers,
+    //         side,
+    //         from,
+    //         to,
+    //     } = *turn;
+    //     if side == from.into_side()
+    //         || !side == from.into_side()
+    //         || side == to.into_side()
+    //         || !side == to.into_side()
+    //         || from == to
+    //     {
+    //         return Err(TurnError::UndefinedPlane);
+    //     }
+    //     // assert!(from.0 >= 0 && to.0 >= 0);
+    //     // TODO: i don't think this needs to be a hashmap
+    //     let mut new_stickers = Vec::new();
+    //     let mut from_pos = vec![Coord(0); self.shape.len()].into_boxed_slice();
+    //     for pos in self.stickers.keys() {
+    //         // TODO: layer mask
+    //         // if if side.0 >= 0 {
+    //         //     layers.0[pos[side.0 as usize].0 as usize]
+    //         // } else {
+    //         //     layers.0[pos[(!side.0) as usize].0 as usize]
+    //         // } {
+    //         if if side.is_positive() {
+    //             ((self.shape[side.into_usize()].0 - 1)..=self.shape[side.into_usize()].0)
+    //                 .contains(&pos[side.into_usize()].0)
+    //         } else {
+    //             ((-self.shape[(!side).into_usize()].0)..=(1 - self.shape[(!side).into_usize()].0))
+    //                 .contains(&pos[(!side).into_usize()].0)
+    //         } {
+    //             // TODO: compute to_pos instead of from_pos???
+    //             // let mut from_pos = pos.clone();
+    //             // this is actually faster, i checked
+    //             from_pos.clone_from_slice(pos);
+
+    //             // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
+    //             if self.shape[from.into_usize()] == self.shape[to.into_usize()] {
+    //                 from_pos[from.into_usize()] = pos[to.into_usize()];
+    //                 from_pos[to.into_usize()] = -pos[from.into_usize()];
+    //             } else {
+    //                 from_pos[from.into_usize()] = -pos[from.into_usize()];
+    //                 from_pos[to.into_usize()] = -pos[to.into_usize()];
+    //             }
+    //             new_stickers.push((pos.clone(), self.stickers[&from_pos]));
+    //         }
+    //     }
+    //     self.stickers.extend(new_stickers);
+    //     Ok(())
+    // }
     #[inline(never)]
     fn turn_side(&mut self, turn: &SideTurn) -> Result<(), TurnError> {
         let SideTurn {
@@ -540,10 +588,9 @@ impl Puzzle {
         {
             return Err(TurnError::UndefinedPlane);
         }
-        // assert!(from.0 >= 0 && to.0 >= 0);
-        // TODO: i don't think this needs to be a hashmap
-        let mut new_stickers = HashMap::new();
-        for pos in self.stickers.keys() {
+        let mut new_stickers = Vec::new();
+        let mut from_pos = vec![Coord(0); self.shape.len()].into_boxed_slice();
+        for (pos, old_sticker) in &self.stickers {
             // TODO: layer mask
             // if if side.0 >= 0 {
             //     layers.0[pos[side.0 as usize].0 as usize]
@@ -558,7 +605,11 @@ impl Puzzle {
                     .contains(&pos[(!side).into_usize()].0)
             } {
                 // TODO: compute to_pos instead of from_pos???
-                let mut from_pos = pos.clone();
+                
+                // let mut from_pos = pos.clone();
+                // this is actually faster, i checked
+                from_pos.clone_from_slice(pos);
+
                 // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
                 if self.shape[from.into_usize()] == self.shape[to.into_usize()] {
                     from_pos[from.into_usize()] = pos[to.into_usize()];
@@ -567,10 +618,16 @@ impl Puzzle {
                     from_pos[from.into_usize()] = -pos[from.into_usize()];
                     from_pos[to.into_usize()] = -pos[to.into_usize()];
                 }
-                new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+                new_stickers.push((old_sticker as *const _, self.stickers[&from_pos]));
             }
         }
-        self.stickers.extend(new_stickers);
+        for (old_sticker, new_sticker) in new_stickers {
+            // # Safety: old sticker is where the entry was,
+            // and we didn't modify the map so it should still be there.
+            unsafe {
+                *(old_sticker as *mut _) = new_sticker;
+            }
+        }
         Ok(())
     }
 
@@ -580,14 +637,14 @@ impl Puzzle {
         if from == to {
             return Err(TurnError::UndefinedPlane);
         }
-        let mut new_stickers = HashMap::new();
+        let mut new_stickers = Vec::new();
         for pos in self.stickers.keys() {
             let mut from_pos = pos.clone();
             from_pos[from.into_usize()] = pos[to.into_usize()];
             from_pos[to.into_usize()] = -pos[from.into_usize()];
-            new_stickers.insert(pos.clone(), self.stickers[&from_pos]);
+            new_stickers.push((pos.clone(), self.stickers[&from_pos]));
         }
-        self.stickers = new_stickers;
+        self.stickers = HashMap::from_iter(new_stickers);
         Ok(())
     }
 
@@ -598,6 +655,35 @@ impl Puzzle {
             Turn::Side(turn) => self.turn_side(turn),
             Turn::Puzzle(turn) => self.turn_puzzle(turn),
         }
+    }
+
+    #[inline(never)]
+    fn scramble(&mut self, rng: &mut impl Rng) {
+        const SCRAMBLE_N: usize = 1000;
+        let start = std::time::Instant::now();
+        let dim = self.shape.len() as i16;
+        let side_dist = rand::distr::Uniform::new(-dim, dim).unwrap();
+        let axis_dist = rand::distr::Uniform::new(0, dim).unwrap();
+        for _ in 0..SCRAMBLE_N {
+            // TODO: layer mask
+            let side = rng.sample(side_dist);
+            let from = rng.sample(axis_dist);
+            if side == from || !side == from {
+                continue;
+            }
+            let to = rng.sample(axis_dist);
+            if side == to || !side == to || from == to {
+                continue;
+            }
+            self.turn_side(&SideTurn {
+                layers: LayerMask::new(),
+                side: Side(side),
+                from: Axis::new(from),
+                to: Axis::new(to),
+            })
+            .unwrap();
+        }
+        println!("scrambled  in {:?}", start.elapsed());
     }
 }
 
@@ -878,6 +964,7 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 ctx.input(|i| {
+                    // handle input
                     for event in i.events.iter() {
                         if let egui::Event::Key {
                             key,
@@ -897,8 +984,12 @@ impl eframe::App for App {
                     }
                 });
 
-                // let dt = ctx.input(|input_state| input_state.stable_dt);
-                // // println!("dt: {:?}", dt);
+                // draw ui
+                if ui.button("scramble").clicked() {
+                    self.puzzle.scramble(&mut rand::rng());
+                }
+
+                // draw puz
                 match &self.layout {
                     Layout::TwoD(layout) => {
                         let painter = ui.painter();
@@ -964,11 +1055,13 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    // let app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
-    // app.render_png("render.png");
-    // panic!();
+    let mut app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
+    app.puzzle.scramble(&mut rand::rng());
+    app.render_png("render.png");
+    panic!();
 
-    let app = App::new(&[2, 3, 4].map(Cut));
+    // let app = App::new(&[2, 3, 4].map(Cut));
+    let app = App::new(&[3, 3, 4].map(Cut));
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "rectangle",
