@@ -1,7 +1,10 @@
-use egui::ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use egui::{
+    Color32,
+    ahash::{HashMap, HashMapExt, HashSet, HashSetExt},
+};
 use itertools::Itertools;
 use rand::prelude::*;
-use std::iter::once;
+use std::{default, iter::once};
 
 /// sides related by ! are opposite,
 /// rather than by -, so that we can 0 index.
@@ -81,30 +84,30 @@ impl Side {
             })
     }
 
-    fn color(self) -> egui::Color32 {
-        let pos_colors: &[egui::Color32] = &[
-            egui::Color32::from_rgb(255, 0, 0),
-            egui::Color32::from_rgb(255, 255, 255),
-            egui::Color32::from_rgb(0, 255, 0),
-            egui::Color32::from_rgb(255, 0, 255),
-            egui::Color32::from_rgb(10, 170, 133),
-            egui::Color32::from_rgb(119, 72, 17),
-            egui::Color32::from_rgb(244, 159, 239),
-            egui::Color32::from_rgb(178, 152, 103),
-            egui::Color32::from_rgb(156, 245, 66),
-            egui::Color32::from_rgb(7, 133, 23),
+    fn color(self) -> Color32 {
+        let pos_colors: &[Color32] = &[
+            Color32::from_rgb(255, 0, 0),
+            Color32::from_rgb(255, 255, 255),
+            Color32::from_rgb(0, 255, 0),
+            Color32::from_rgb(255, 0, 255),
+            Color32::from_rgb(10, 170, 133),
+            Color32::from_rgb(119, 72, 17),
+            Color32::from_rgb(244, 159, 239),
+            Color32::from_rgb(178, 152, 103),
+            Color32::from_rgb(156, 245, 66),
+            Color32::from_rgb(7, 133, 23),
         ];
-        let neg_colors: &[egui::Color32] = &[
-            egui::Color32::from_rgb(255, 128, 0),
-            egui::Color32::from_rgb(255, 255, 0),
-            egui::Color32::from_rgb(0, 128, 255),
-            egui::Color32::from_rgb(143, 16, 234),
-            egui::Color32::from_rgb(125, 170, 10),
-            egui::Color32::from_rgb(109, 69, 100),
-            egui::Color32::from_rgb(212, 169, 78),
-            egui::Color32::from_rgb(178, 121, 103),
-            egui::Color32::from_rgb(66, 212, 245),
-            egui::Color32::from_rgb(47, 47, 189),
+        let neg_colors: &[Color32] = &[
+            Color32::from_rgb(255, 128, 0),
+            Color32::from_rgb(255, 255, 0),
+            Color32::from_rgb(0, 128, 255),
+            Color32::from_rgb(143, 16, 234),
+            Color32::from_rgb(125, 170, 10),
+            Color32::from_rgb(109, 69, 100),
+            Color32::from_rgb(212, 169, 78),
+            Color32::from_rgb(178, 121, 103),
+            Color32::from_rgb(66, 212, 245),
+            Color32::from_rgb(47, 47, 189),
         ];
         *self.get(pos_colors, neg_colors)
     }
@@ -195,6 +198,14 @@ fn position_is_sticker(position: &Position, shape: &[Cut]) -> bool {
         .filter(|(coord, cut)| coord.0.abs() == cut.0)
         .count()
         == 1
+}
+fn position_is_piece(position: &Position, shape: &[Cut]) -> bool {
+    position
+        .iter()
+        .zip(shape)
+        .filter(|(coord, cut)| coord.0.abs() == cut.0 - 1)
+        .count()
+        > 0
 }
 
 /// exactly one of the coords is ±n
@@ -963,32 +974,40 @@ impl Layout2d {
 
 #[derive(Clone, Debug)]
 struct StickerFormatBuilder {
-    outline_color: Option<egui::Color32>,
+    outline_color: Option<Color32>,
     outline_width: Option<f32>,
     sticker_scale: Option<f32>,
     sticker_opacity: Option<f32>,
 }
 impl StickerFormatBuilder {
-    fn new() -> Self {
-        StickerFormatBuilder {
-            outline_color: None,
-            outline_width: None,
-            sticker_scale: None,
-            sticker_opacity: None,
-        }
+    pub const NONE: Self = StickerFormatBuilder {
+        outline_color: None,
+        outline_width: None,
+        sticker_scale: None,
+        sticker_opacity: None,
+    };
+
+    fn update(&mut self, other: &StickerFormatBuilder) {
+        self.outline_color = self.outline_color.or(other.outline_color);
+        self.outline_width = self.outline_width.or(other.outline_width);
+        self.sticker_scale = self.sticker_scale.or(other.sticker_scale);
+        self.sticker_opacity = self.sticker_opacity.or(other.sticker_opacity);
     }
 
-    // fn update(&mut self, ) {
-
-    // }
-
-    // fn build()
+    fn build_or(&self, default: &StickerFormat) -> StickerFormat {
+        StickerFormat {
+            outline_color: self.outline_color.unwrap_or(default.outline_color),
+            outline_width: self.outline_width.unwrap_or(default.outline_width),
+            sticker_scale: self.sticker_scale.unwrap_or(default.sticker_scale),
+            sticker_opacity: self.sticker_opacity.unwrap_or(default.sticker_opacity),
+        }
+    }
 }
 
 // TODO: better name
 #[derive(Clone, Debug)]
 struct StickerFormat {
-    outline_color: egui::Color32,
+    outline_color: Color32,
     /// lives in [0.0, 1.0],
     /// where 1.0 is the size of a sticker
     outline_width: f32,
@@ -1000,7 +1019,7 @@ struct StickerFormat {
 // impl Default for StickerFormat {
 //     fn default() -> Self {
 //         StickerFormat {
-//             outline_color: egui::Color32::from_rgb(100, 100, 100),
+//             outline_color: Color32::from_rgb(100, 100, 100),
 //             outline_width: 0.02,
 //             sticker_scale: 1.0,
 //             sticker_opacity: 1.0,
@@ -1010,8 +1029,8 @@ struct StickerFormat {
 
 #[derive(Clone, Debug)]
 struct FilterTerm {
-    must_have: Vec<Side>,
-    cant_have: Vec<Side>,
+    must_have: HashSet<Side>,
+    cant_have: HashSet<Side>,
 }
 impl FilterTerm {
     fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
@@ -1032,16 +1051,11 @@ impl FilterTerm {
 #[derive(Clone, Debug)]
 struct Filter {
     terms: Vec<FilterTerm>,
-    format: StickerFormat,
+    format: StickerFormatBuilder,
 }
 impl Filter {
-    fn try_get(&self, shape: &[Cut], piece: &[Coord]) -> Option<StickerFormat> {
-        for term in &self.terms {
-            if term.matches(shape, piece) {
-                return Some(self.format.clone());
-            }
-        }
-        None
+    fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
+        self.terms.iter().any(|term| term.matches(shape, piece))
     }
 }
 
@@ -1050,14 +1064,14 @@ impl Filter {
 #[derive(Clone, Debug)]
 struct FilterStage(Vec<Filter>);
 impl FilterStage {
-    fn try_get(&self, shape: &[Cut], piece: &[Coord]) -> Option<StickerFormat> {
-        for filter in &self.0 {
-            if let Some(format) = filter.try_get(shape, piece) {
-                return Some(format);
-            }
-        }
-        None
-    }
+    // fn try_get(&self, shape: &[Cut], piece: &[Coord]) -> Option<StickerFormatBuilder> {
+    //     for filter in &self.0 {
+    //         if let Some(format) = filter.try_get(shape, piece) {
+    //             return Some(format);
+    //         }
+    //     }
+    //     None
+    // }
 }
 
 #[derive(Clone, Debug)]
@@ -1076,10 +1090,13 @@ struct App {
     side_positions: HashMap<Side, Box<[Coord]>>,
     turn_builder: TurnBuilder,
     clicked_pieces: HashSet<Box<Piece>>,
+    internal_color: Color32,
     internal_format: StickerFormat,
-    hovered_format: StickerFormat,
-    clicked_format: StickerFormat,
-    gripped_format: StickerFormat,
+    hovered_format: StickerFormatBuilder,
+    clicked_format: StickerFormatBuilder,
+    gripped_format: StickerFormatBuilder,
+    default_filter_format: StickerFormat,
+    default_no_filter_format: StickerFormat,
     filter_sequence: FilterSequence,
     filter_stage: Option<usize>,
 }
@@ -1126,6 +1143,15 @@ impl App {
         // } else {
         //     unreachable!()
         // }
+        {
+            let screen_to_pos =
+                HashMap::from_iter(layout.mapping.iter().map(|(pos, xy)| (xy, pos)));
+            println!("mapping.len: {:?}", layout.mapping.len());
+            println!("inverse.len: {:?}", screen_to_pos.len());
+            println!("{:?}", layout.mapping);
+            println!("{:?}", screen_to_pos);
+        }
+
         #[inline(never)]
         fn get_side_positions(shape: &[Cut]) -> HashMap<Side, Box<[Coord]>> {
             let mut side_positions = HashMap::new();
@@ -1165,26 +1191,39 @@ impl App {
             side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
             clicked_pieces: HashSet::new(),
+            internal_color: Color32::DARK_GRAY,
             internal_format: StickerFormat {
-                outline_color: egui::Color32::from_rgb(0, 0, 0),
-                outline_width: 0.0,
-                sticker_scale: 0.5,
-                sticker_opacity: 1.0,
-            },
-            hovered_format: StickerFormat {
-                outline_color: egui::Color32::from_rgb(200, 200, 200),
+                outline_color: Color32::BLACK,
                 outline_width: 0.05,
                 sticker_scale: 1.0,
                 sticker_opacity: 1.0,
             },
-            clicked_format: StickerFormat {
-                outline_color: egui::Color32::WHITE,
-                outline_width: 0.05,
-                sticker_scale: 1.0,
-                sticker_opacity: 1.0,
+            hovered_format: StickerFormatBuilder {
+                outline_color: Some(Color32::WHITE),
+                outline_width: Some(0.1),
+                sticker_scale: None,
+                sticker_opacity: None,
             },
-            gripped_format: StickerFormat {
-                outline_color: egui::Color32::from_rgb(100, 100, 100),
+            clicked_format: StickerFormatBuilder {
+                outline_color: Some(Color32::LIGHT_GRAY),
+                outline_width: Some(0.1),
+                sticker_scale: None,
+                sticker_opacity: None,
+            },
+            gripped_format: StickerFormatBuilder {
+                outline_color: Some(Color32::GRAY),
+                outline_width: Some(0.05),
+                sticker_scale: None,
+                sticker_opacity: None,
+            },
+            default_filter_format: StickerFormat {
+                outline_color: Color32::BLACK,
+                outline_width: 0.05,
+                sticker_scale: 0.7,
+                sticker_opacity: 0.5,
+            },
+            default_no_filter_format: StickerFormat {
+                outline_color: Color32::BLACK,
                 outline_width: 0.05,
                 sticker_scale: 1.0,
                 sticker_opacity: 1.0,
@@ -1202,7 +1241,7 @@ impl App {
         let start = std::time::Instant::now();
         let mut buf = vec![0; self.layout.width * self.layout.height * 3];
 
-        let mut draw_sticker = |pos: &[Coord], color: egui::Color32| {
+        let mut draw_sticker = |pos: &[Coord], color: Color32| {
             let (x, y) = self.layout.mapping[pos];
             let i = ((self.layout.height - y - 1) * self.layout.width + x) * 3;
             buf[i] = color.r();
@@ -1211,7 +1250,7 @@ impl App {
         };
 
         for pos in Cut::positions(&self.puzzle.shape) {
-            draw_sticker(&pos, egui::Color32::GRAY);
+            draw_sticker(&pos, Color32::GRAY);
         }
         for (pos, side) in &self.puzzle.stickers {
             draw_sticker(pos, side.color());
@@ -1304,12 +1343,28 @@ impl eframe::App for App {
                 };
                 let hovered_pos: Option<Box<Position>> =
                     ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
+                // TODO: rewrite with map
+                let hovered_piece = if let Some(hovered_pos) = &hovered_pos {
+                    if position_is_sticker(hovered_pos, &self.puzzle.shape) {
+                        Some(sticker_to_piece(hovered_pos, &self.puzzle.shape))
+                    } else if position_is_piece(hovered_pos, &self.puzzle.shape) {
+                        Some(hovered_pos.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 // if we clicked, added the hovered piece to the clicked pieces
-                if let Some(hovered_pos) = &hovered_pos
+                if let Some(hovered_piece) = &hovered_piece
                     && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
-                    && position_is_sticker(hovered_pos, &self.puzzle.shape)
                 {
-                    self.clicked_pieces.insert(hovered_pos.clone());
+                    if self.clicked_pieces.contains(hovered_piece) {
+                        self.clicked_pieces.remove(hovered_piece);
+                    } else {
+                        self.clicked_pieces.insert(hovered_piece.clone());
+                    }
+                    println!("clicked: {:?}", self.clicked_pieces);
                 }
                 // TODO: layer mask
                 let gripped_side = match &self.turn_builder {
@@ -1317,32 +1372,31 @@ impl eframe::App for App {
                     TurnBuilder::Puzzle { .. } => None,
                 };
                 let format_sticker = |sticker: &Sticker| -> StickerFormat {
-                    // if let Some(hovered_piece) = hovered_position
-                    //     && piece_of_sticker(sticker, &self.puzzle.shape) == hovered_piece
-                    // {
-                    //     return self.hovered_format.clone();
-                    // }
+                    let mut ret = StickerFormatBuilder::NONE;
+                    if let Some(hovered_piece) = hovered_piece.clone()
+                        && sticker_to_piece(sticker, &self.puzzle.shape) == hovered_piece
+                    {
+                        ret.update(&self.hovered_format);
+                    }
                     for clicked_piece in &self.clicked_pieces {
                         if sticker_to_piece(sticker, &self.puzzle.shape) == *clicked_piece {
-                            return self.clicked_format.clone();
+                            ret.update(&self.clicked_format);
                         }
                     }
                     if let Some(gripped_side) = gripped_side
                         && sticker_to_side(sticker, &self.puzzle.shape) == gripped_side
                     {
-                        return self.gripped_format.clone();
+                        ret.update(&self.gripped_format);
                     }
-                    if let Some(filter_stage) = self.filter_stage
-                        && let Some(format) = self.filter_sequence.0[filter_stage]
-                            .try_get(&self.puzzle.shape, sticker)
-                    {
-                        return format;
-                    }
-                    StickerFormat {
-                        outline_color: egui::Color32::from_rgb(100, 100, 100),
-                        outline_width: 0.02,
-                        sticker_scale: 1.0,
-                        sticker_opacity: 1.0,
+                    if let Some(filter_stage) = self.filter_stage {
+                        for filter in &self.filter_sequence.0[filter_stage].0 {
+                            if filter.matches(&self.puzzle.shape, sticker) {
+                                ret.update(&filter.format);
+                            }
+                        }
+                        ret.build_or(&self.default_filter_format)
+                    } else {
+                        ret.build_or(&self.default_no_filter_format)
                     }
                 };
 
@@ -1354,7 +1408,7 @@ impl eframe::App for App {
                 //         egui::Vec2::new(1.0, 1.0) * scale,
                 //     )
                 // };
-                let draw_sticker = |pos: &[Coord], color: egui::Color32, format: &StickerFormat| {
+                let draw_sticker = |pos: &[Coord], color: Color32, format: &StickerFormat| {
                     let rect = egui::Rect::from_center_size(
                         screen_of_pos(pos),
                         egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
@@ -1363,7 +1417,7 @@ impl eframe::App for App {
                     painter.rect_filled(
                         rect,
                         0.0,
-                        egui::Color32::from_rgba_unmultiplied(
+                        Color32::from_rgba_unmultiplied(
                             color.r(),
                             color.g(),
                             color.b(),
@@ -1378,7 +1432,7 @@ impl eframe::App for App {
                     );
                 };
                 for pos in Cut::positions(&self.puzzle.shape) {
-                    draw_sticker(&pos, egui::Color32::DARK_GRAY, &self.internal_format);
+                    draw_sticker(&pos, Color32::DARK_GRAY, &self.internal_format);
                 }
                 for (pos, side) in &self.puzzle.stickers {
                     draw_sticker(pos, side.color(), &format_sticker(pos));
@@ -1402,11 +1456,11 @@ impl eframe::App for App {
                             side.side_key().to_string()
                         },
                         egui::TextStyle::Monospace.resolve(&ctx.style()),
-                        egui::Color32::LIGHT_GRAY,
+                        Color32::LIGHT_GRAY,
                     );
                 }
                 // if let Some(hovered_position) = &hovered_pos {
-                //     draw_sticker(hovered_position, egui::Color32::from_rgb(200, 200, 200));
+                //     draw_sticker(hovered_position, Color32::from_rgb(200, 200, 200));
                 // }
 
                 // painter.text(
@@ -1414,7 +1468,7 @@ impl eframe::App for App {
                 //     egui::Align2::LEFT_BOTTOM,
                 //     format!("{:?}", self.turn_builder),
                 //     egui::TextStyle::Monospace.resolve(&ctx.style()),
-                //     egui::Color32::LIGHT_GRAY,
+                //     Color32::LIGHT_GRAY,
                 // );
             });
     }
