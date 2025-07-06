@@ -8,6 +8,7 @@ use std::iter::once;
 /// lives in -dim..=dim-1
 /// eg for dim=3, it would be in [-3, -2, -1, 0, 1, 2]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 struct Side(i16);
 impl Side {
     fn new(side: i16) -> Self {
@@ -120,6 +121,7 @@ impl std::ops::Not for Side {
 /// lives in 0..=dim-1
 /// eg for dim=3, it would be in [0, 1, 2]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 struct Axis(Side);
 impl Axis {
     fn new(axis: i16) -> Self {
@@ -174,6 +176,7 @@ impl Axis {
 /// eg for n=3, it would be in [-3, -2, 0, 2, 3]
 /// eg for n=4, it would be in [-4, -3, -1, 1, 3, 4]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 struct Coord(i16);
 impl std::ops::Neg for Coord {
     type Output = Self;
@@ -181,6 +184,121 @@ impl std::ops::Neg for Coord {
     fn neg(self) -> Self::Output {
         Coord(-self.0)
     }
+}
+
+struct Position([Coord]);
+
+/// exactly one of the coords is ±n
+type Sticker = [Coord];
+// #[derive(RefCast)]
+// #[derive(bytemuck::TransparentWrapper)]
+// #[repr(transparent)]
+// struct Sticker(Coord);
+// impl Sticker {
+//     fn piece_of_sticker(&self, shape: &[Cut]) -> Box<Piece> {
+//         let ret = self
+//             .0
+//             .iter()
+//             .zip(shape)
+//             .map(|(coord, cut)| {
+//                 if coord.0 == cut.0 {
+//                     Coord(coord.0 - 1)
+//                 } else if -coord.0 == cut.0 {
+//                     Coord(coord.0 + 1)
+//                 } else {
+//                     *coord
+//                 }
+//             })
+//             .collect::<Box<[Coord]>>();
+//         // Box::new(Piece(ret))
+//         // Box::new(Piece(*ret))
+//         // unsafe { &*(s.as_ref() as *const OsStr as *const Path) }
+//         // ret as Box<Piece>
+//         // let a = Self::ref_cast(&ret);
+//         // ret
+//     }
+// }
+// impl From<&[Coord]> for &Piece {
+//     fn from(coords: &[Coord]) -> Self {
+//         &Piece(*coords)
+//     }
+// }
+fn piece_of_sticker(sticker: &Sticker, shape: &[Cut]) -> Box<Piece> {
+    sticker
+        .iter()
+        .zip(shape)
+        .map(|(coord, cut)| {
+            if coord.0 == cut.0 {
+                Coord(coord.0 - 1)
+            } else if -coord.0 == cut.0 {
+                Coord(coord.0 + 1)
+            } else {
+                *coord
+            }
+        })
+        .collect::<_>()
+}
+
+// TODO: refactor to use this function
+fn side_of_sticker(sticker: &Sticker, shape: &[Cut]) -> Side {
+    sticker
+        .iter()
+        .zip(shape)
+        .enumerate()
+        .filter_map(|(i, (coord, cut))| {
+            if coord.0 == cut.0 {
+                Some(Side::new(i as i16))
+            } else if -coord.0 == cut.0 {
+                Some(Side::new(-(i as i16)))
+            } else {
+                None
+            }
+        })
+        .next()
+        .expect("sticker should be on a side")
+}
+
+/// at least one of the coords is ±(n-1)
+type Piece = [Coord];
+// struct Piece([Coord]);
+// impl Piece {
+//     fn sides_of_piece(&self, shape: &[Cut]) -> Box<[Side]> {
+//         let ret: Box<[Side]> = self
+//             .0
+//             .iter()
+//             .zip(shape)
+//             .enumerate()
+//             .filter_map(|(i, (coord, cut))| {
+//                 if coord.0 + 1 == cut.0 {
+//                     Some(Side::new(i as i16))
+//                 } else if -coord.0 - 1 == cut.0 {
+//                     Some(Side::new(!(i as i16)))
+//                 } else {
+//                     None
+//                 }
+//             })
+//             .collect::<_>();
+//         debug_assert!(!ret.is_empty(), "piece should be on at least one side");
+//         ret
+//     }
+// }
+fn sides_of_piece(piece: &Piece, shape: &[Cut]) -> Box<[Side]> {
+    let ret: Box<[Side]> = piece
+        .iter()
+        .zip(shape)
+        .enumerate()
+        .filter_map(|(i, (coord, cut))| {
+            if coord.0 + 1 == cut.0 {
+                Some(Side::new(i as i16))
+            } else if -coord.0 - 1 == cut.0 {
+                Some(Side::new(!(i as i16)))
+            } else {
+                None
+            }
+        })
+        .collect::<_>();
+    debug_assert!(!ret.is_empty(), "piece should be on at least one side");
+    ret
 }
 
 // #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -605,7 +723,7 @@ impl Puzzle {
                     .contains(&pos[(!side).into_usize()].0)
             } {
                 // TODO: compute to_pos instead of from_pos???
-                
+
                 // let mut from_pos = pos.clone();
                 // this is actually faster, i checked
                 from_pos.clone_from_slice(pos);
@@ -804,6 +922,8 @@ impl Layout2dBuilder {
         self.height += shift;
     }
 }
+
+#[derive(Clone, Debug)]
 struct Layout2d {
     width: usize,
     height: usize,
@@ -825,18 +945,133 @@ impl Layout2d {
     }
 }
 
+#[derive(Clone, Debug)]
 enum Layout {
     // OneD(Layout1d),
     TwoD(Layout2d),
     // ThreeD(Layout3d),
 }
 
+#[derive(Clone, Debug)]
+struct StickerFormatBuilder {
+    outline_color: Option<egui::Color32>,
+    outline_width: Option<f32>,
+    sticker_scale: Option<f32>,
+    sticker_opacity: Option<f32>,
+}
+impl StickerFormatBuilder {
+    fn new() -> Self {
+        StickerFormatBuilder {
+            outline_color: None,
+            outline_width: None,
+            sticker_scale: None,
+            sticker_opacity: None,
+        }
+    }
+
+    // fn update(&mut self, ) {
+
+    // }
+
+    // fn build()
+}
+
+// TODO: better name
+#[derive(Clone, Debug)]
+struct StickerFormat {
+    outline_color: egui::Color32,
+    /// lives in [0.0, 1.0],
+    /// where 1.0 is the size of a sticker
+    outline_width: f32,
+    /// lives in [0.0, 1.0]
+    sticker_scale: f32,
+    /// lives in [0.0, 1.0]
+    sticker_opacity: f32,
+}
+// impl Default for StickerFormat {
+//     fn default() -> Self {
+//         StickerFormat {
+//             outline_color: egui::Color32::from_rgb(100, 100, 100),
+//             outline_width: 0.02,
+//             sticker_scale: 1.0,
+//             sticker_opacity: 1.0,
+//         }
+//     }
+// }
+
+#[derive(Clone, Debug)]
+struct FilterTerm {
+    must_have: Vec<Side>,
+    cant_have: Vec<Side>,
+}
+impl FilterTerm {
+    fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
+        let sides = sides_of_piece(piece, shape);
+        for side in &sides {
+            if !self.must_have.contains(side) {
+                return false;
+            }
+            if self.cant_have.contains(side) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// the filter matches a piece if it matches any of the terms
+#[derive(Clone, Debug)]
+struct Filter {
+    terms: Vec<FilterTerm>,
+    format: StickerFormat,
+}
+impl Filter {
+    fn try_get(&self, shape: &[Cut], piece: &[Coord]) -> Option<StickerFormat> {
+        for term in &self.terms {
+            if term.matches(shape, piece) {
+                return Some(self.format.clone());
+            }
+        }
+        None
+    }
+}
+
+/// a entire filter stage is rendered at once,
+/// with the last Some property of the filter being applied to that piece
+#[derive(Clone, Debug)]
+struct FilterStage(Vec<Filter>);
+impl FilterStage {
+    fn try_get(&self, shape: &[Cut], piece: &[Coord]) -> Option<StickerFormat> {
+        for filter in &self.0 {
+            if let Some(format) = filter.try_get(shape, piece) {
+                return Some(format);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FilterSequence(Vec<FilterStage>);
+// impl FilterSequence {
+//     fn new() -> Self {
+//         FilterSequence(Vec::new())
+//     }
+// }
+
+#[derive(Clone, Debug)]
 struct App {
     puzzle: Puzzle,
     layout: Layout,
     /// where the labels for the sides go
     side_positions: HashMap<Side, Box<[Coord]>>,
     turn_builder: TurnBuilder,
+    clicked_pieces: Vec<Box<Piece>>,
+    hovered_format: StickerFormat,
+    clicked_format: StickerFormat,
+    gripped_format: StickerFormat,
+    filter_sequence: FilterSequence,
+    filter_stage: Option<usize>,
 }
 impl App {
     const MAX_DIM: usize = 10;
@@ -918,6 +1153,27 @@ impl App {
             layout,
             side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
+            clicked_pieces: Vec::new(),
+            hovered_format: StickerFormat {
+                outline_color: egui::Color32::from_rgb(200, 200, 200),
+                outline_width: 0.05,
+                sticker_scale: 1.0,
+                sticker_opacity: 1.0,
+            },
+            clicked_format: StickerFormat {
+                outline_color: egui::Color32::WHITE,
+                outline_width: 0.05,
+                sticker_scale: 1.0,
+                sticker_opacity: 1.0,
+            },
+            gripped_format: StickerFormat {
+                outline_color: egui::Color32::from_rgb(100, 100, 100),
+                outline_width: 0.05,
+                sticker_scale: 1.0,
+                sticker_opacity: 1.0,
+            },
+            filter_sequence: FilterSequence(Vec::new()),
+            filter_stage: None,
         }
     }
 
@@ -989,7 +1245,60 @@ impl eframe::App for App {
                     self.puzzle.scramble(&mut rand::rng());
                 }
 
-                // draw puz
+                // assert!(self.puzzle.shape.len() == 3);
+                // fn project_3_2(coords: (f32, f32, f32)) -> (f32, f32) {
+                //     (coords.0, coords.1)
+                // }
+                // fn pos_to_vertexes_3(
+                //     pos: &[Coord]
+                // ) -> Vec<(f32, f32, f32)>  {
+                //     assert!(pos.len() == 3);
+                // }
+
+                // puzzle: &Puzzle, hovered: Option<&Piece>, clicked: &[&Piece], gripped: Option<Side>,
+
+                // draw puzzle
+                // TODO: hovered math
+                let hovered_piece = None;
+                // TODO: layer mask
+                let gripped_side = match &self.turn_builder {
+                    TurnBuilder::Side { layers, side, .. } => side.clone(),
+                    TurnBuilder::Puzzle { .. } => None,
+                };
+                let format_sticker = |sticker: &Sticker| -> StickerFormat {
+                    if let Some(hovered_piece) = hovered_piece
+                        && piece_of_sticker(sticker, &self.puzzle.shape) == hovered_piece
+                    {
+                        return self.hovered_format.clone();
+                    }
+
+                    for clicked_piece in &self.clicked_pieces {
+                        if piece_of_sticker(sticker, &self.puzzle.shape) == *clicked_piece {
+                            return self.clicked_format.clone();
+                        }
+                    }
+
+                    if let Some(gripped_side) = gripped_side
+                        && side_of_sticker(sticker, &self.puzzle.shape) == gripped_side
+                    {
+                        return self.gripped_format.clone();
+                    }
+
+                    if let Some(filter_stage) = self.filter_stage
+                        && let Some(format) = self.filter_sequence.0[filter_stage]
+                            .try_get(&self.puzzle.shape, &sticker)
+                    {
+                        return format;
+                    }
+
+                    StickerFormat {
+                        outline_color: egui::Color32::from_rgb(100, 100, 100),
+                        outline_width: 0.02,
+                        sticker_scale: 1.0,
+                        sticker_opacity: 1.0,
+                    }
+                };
+
                 match &self.layout {
                     Layout::TwoD(layout) => {
                         let painter = ui.painter();
@@ -1055,10 +1364,10 @@ fn main() -> eframe::Result {
     // unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     // env_logger::init();
 
-    let mut app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
-    app.puzzle.scramble(&mut rand::rng());
-    app.render_png("render.png");
-    panic!();
+    // let mut app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
+    // app.puzzle.scramble(&mut rand::rng());
+    // app.render_png("render.png");
+    // panic!();
 
     // let app = App::new(&[2, 3, 4].map(Cut));
     let app = App::new(&[3, 3, 4].map(Cut));
