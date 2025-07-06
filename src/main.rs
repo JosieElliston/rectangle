@@ -948,6 +948,7 @@ struct Layout2d {
     width: usize,
     height: usize,
     mapping: HashMap<Box<[Coord]>, (usize, usize)>,
+    inverse: HashMap<(usize, usize), Box<[Coord]>>,
 }
 impl Layout2d {
     #[inline(never)]
@@ -958,8 +959,14 @@ impl Layout2d {
             height: builder.height,
             mapping: builder
                 .mapping
+                .clone()
                 .into_iter()
                 .map(|(pos, xy)| (pos.into(), xy))
+                .collect(),
+            inverse: builder
+                .mapping
+                .into_iter()
+                .map(|(pos, xy)| (xy, pos.into()))
                 .collect(),
         }
     }
@@ -1143,14 +1150,6 @@ impl App {
         // } else {
         //     unreachable!()
         // }
-        {
-            let screen_to_pos =
-                HashMap::from_iter(layout.mapping.iter().map(|(pos, xy)| (xy, pos)));
-            println!("mapping.len: {:?}", layout.mapping.len());
-            println!("inverse.len: {:?}", screen_to_pos.len());
-            println!("{:?}", layout.mapping);
-            println!("{:?}", screen_to_pos);
-        }
 
         #[inline(never)]
         fn get_side_positions(shape: &[Cut]) -> HashMap<Side, Box<[Coord]>> {
@@ -1321,25 +1320,18 @@ impl eframe::App for App {
                 );
                 let screen_of_pos = |pos: &Position| -> egui::Pos2 {
                     let (x, y) = self.layout.mapping[pos];
-                    egui::Pos2::new(0.5 + x as f32, 0.5 + (self.layout.height - y - 1) as f32)
+                    egui::Pos2::new(0.5 + x as f32, 0.5 + (self.layout.height - 1 - y) as f32)
                         * scale
                 };
                 let pos_of_screen = |screen: egui::Pos2| -> Option<Box<Position>> {
-                    let x = (screen.x / scale - 0.5).round() as usize;
-                    let y = (screen.y / scale - 0.5).round() as usize;
-                    if x >= self.layout.width || y >= self.layout.height {
+                    let x = (screen.x / scale - 0.5).round() as i32;
+                    let y = self.layout.height as i32 - 1 - (screen.y / scale - 0.5).round() as i32;
+                    if !(0..self.layout.width as _).contains(&x)
+                        || !(0..self.layout.height as _).contains(&y)
+                    {
                         return None;
                     }
-                    self.layout
-                        .mapping
-                        .iter()
-                        .find_map(|(pos, (pos_x, pos_y))| {
-                            if *pos_x == x && *pos_y == self.layout.height - y - 1 {
-                                Some(pos.clone())
-                            } else {
-                                None
-                            }
-                        })
+                    self.layout.inverse.get(&(x as usize, y as usize)).cloned()
                 };
                 let hovered_pos: Option<Box<Position>> =
                     ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
@@ -1364,7 +1356,6 @@ impl eframe::App for App {
                     } else {
                         self.clicked_pieces.insert(hovered_piece.clone());
                     }
-                    println!("clicked: {:?}", self.clicked_pieces);
                 }
                 // TODO: layer mask
                 let gripped_side = match &self.turn_builder {
@@ -1691,6 +1682,25 @@ mod tests {
                         println!("here 5");
                         assert_eq!(new_puzzle, puzzle);
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_layout_mapping_inverse() {
+        for dim in 1..=4 {
+            for shape in (1..=dim)
+                .map(|_| (2..=4).map(Cut))
+                .multi_cartesian_product()
+            {
+                let layout = Layout2d::new(&shape);
+                assert_eq!(layout.mapping.len(), layout.inverse.len());
+                for (pos, xy) in &layout.mapping {
+                    assert_eq!(*pos, layout.inverse[xy]);
+                }
+                for (xy, pos) in &layout.inverse {
+                    assert_eq!(*xy, layout.mapping[pos]);
                 }
             }
         }
