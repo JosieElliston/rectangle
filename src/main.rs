@@ -1,4 +1,4 @@
-use egui::ahash::{HashMap, HashMapExt};
+use egui::ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use itertools::Itertools;
 use rand::prelude::*;
 use std::iter::once;
@@ -186,7 +186,16 @@ impl std::ops::Neg for Coord {
     }
 }
 
-struct Position([Coord]);
+/// any (possibly internal) position
+type Position = [Coord];
+fn position_is_sticker(position: &Position, shape: &[Cut]) -> bool {
+    position
+        .iter()
+        .zip(shape)
+        .filter(|(coord, cut)| coord.0.abs() == cut.0)
+        .count()
+        == 1
+}
 
 /// exactly one of the coords is ±n
 type Sticker = [Coord];
@@ -223,7 +232,7 @@ type Sticker = [Coord];
 //         &Piece(*coords)
 //     }
 // }
-fn piece_of_sticker(sticker: &Sticker, shape: &[Cut]) -> Box<Piece> {
+fn sticker_to_piece(sticker: &Sticker, shape: &[Cut]) -> Box<Piece> {
     sticker
         .iter()
         .zip(shape)
@@ -240,7 +249,7 @@ fn piece_of_sticker(sticker: &Sticker, shape: &[Cut]) -> Box<Piece> {
 }
 
 // TODO: refactor to use this function
-fn side_of_sticker(sticker: &Sticker, shape: &[Cut]) -> Side {
+fn sticker_to_side(sticker: &Sticker, shape: &[Cut]) -> Side {
     sticker
         .iter()
         .zip(shape)
@@ -282,7 +291,7 @@ type Piece = [Coord];
 //         ret
 //     }
 // }
-fn sides_of_piece(piece: &Piece, shape: &[Cut]) -> Box<[Side]> {
+fn piece_to_sides(piece: &Piece, shape: &[Cut]) -> Box<[Side]> {
     let ret: Box<[Side]> = piece
         .iter()
         .zip(shape)
@@ -945,12 +954,12 @@ impl Layout2d {
     }
 }
 
-#[derive(Clone, Debug)]
-enum Layout {
-    // OneD(Layout1d),
-    TwoD(Layout2d),
-    // ThreeD(Layout3d),
-}
+// #[derive(Clone, Debug)]
+// enum Layout {
+//     // OneD(Layout1d),
+//     TwoD(Layout2d),
+//     // ThreeD(Layout3d),
+// }
 
 #[derive(Clone, Debug)]
 struct StickerFormatBuilder {
@@ -1006,7 +1015,7 @@ struct FilterTerm {
 }
 impl FilterTerm {
     fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
-        let sides = sides_of_piece(piece, shape);
+        let sides = piece_to_sides(piece, shape);
         for side in &sides {
             if !self.must_have.contains(side) {
                 return false;
@@ -1062,11 +1071,12 @@ struct FilterSequence(Vec<FilterStage>);
 #[derive(Clone, Debug)]
 struct App {
     puzzle: Puzzle,
-    layout: Layout,
+    layout: Layout2d,
     /// where the labels for the sides go
     side_positions: HashMap<Side, Box<[Coord]>>,
     turn_builder: TurnBuilder,
-    clicked_pieces: Vec<Box<Piece>>,
+    clicked_pieces: HashSet<Box<Piece>>,
+    internal_format: StickerFormat,
     hovered_format: StickerFormat,
     clicked_format: StickerFormat,
     gripped_format: StickerFormat,
@@ -1102,7 +1112,8 @@ impl App {
         println!("puzzle gen in {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
-        let layout = Layout::TwoD(Layout2d::new(shape));
+        // let layout = Layout::TwoD(Layout2d::new(shape));
+        let layout = Layout2d::new(shape);
         println!("layout gen in {:?}", start.elapsed());
         // if let Layout::TwoD(layout) = &layout {
         //     for (pos, xy) in layout.mapping.iter() {
@@ -1153,7 +1164,13 @@ impl App {
             layout,
             side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
-            clicked_pieces: Vec::new(),
+            clicked_pieces: HashSet::new(),
+            internal_format: StickerFormat {
+                outline_color: egui::Color32::from_rgb(0, 0, 0),
+                outline_width: 0.0,
+                sticker_scale: 0.5,
+                sticker_opacity: 1.0,
+            },
             hovered_format: StickerFormat {
                 outline_color: egui::Color32::from_rgb(200, 200, 200),
                 outline_width: 0.05,
@@ -1179,15 +1196,15 @@ impl App {
 
     #[inline(never)]
     fn render_png(&self, path: &str) {
-        let Layout::TwoD(layout) = &self.layout else {
-            panic!("render_png only works for Layout2d");
-        };
+        // let Layout::TwoD(layout) = &self.layout else {
+        //     panic!("render_png only works for Layout2d");
+        // };
         let start = std::time::Instant::now();
-        let mut buf = vec![0; layout.width * layout.height * 3];
+        let mut buf = vec![0; self.layout.width * self.layout.height * 3];
 
         let mut draw_sticker = |pos: &[Coord], color: egui::Color32| {
-            let (x, y) = layout.mapping[pos];
-            let i = ((layout.height - y - 1) * layout.width + x) * 3;
+            let (x, y) = self.layout.mapping[pos];
+            let i = ((self.layout.height - y - 1) * self.layout.width + x) * 3;
             buf[i] = color.r();
             buf[i + 1] = color.g();
             buf[i + 2] = color.b();
@@ -1205,8 +1222,8 @@ impl App {
         image::save_buffer(
             path,
             &buf,
-            layout.width as _,
-            layout.height as _,
+            self.layout.width as _,
+            self.layout.height as _,
             image::ColorType::Rgb8,
         )
         .unwrap();
@@ -1258,39 +1275,69 @@ impl eframe::App for App {
                 // puzzle: &Puzzle, hovered: Option<&Piece>, clicked: &[&Piece], gripped: Option<Side>,
 
                 // draw puzzle
-                // TODO: hovered math
-                let hovered_piece = None;
+                let rect = ui.available_rect_before_wrap();
+                let scale = f32::min(
+                    rect.width() / self.layout.width as f32,
+                    rect.height() / self.layout.height as f32,
+                );
+                let screen_of_pos = |pos: &Position| -> egui::Pos2 {
+                    let (x, y) = self.layout.mapping[pos];
+                    egui::Pos2::new(0.5 + x as f32, 0.5 + (self.layout.height - y - 1) as f32)
+                        * scale
+                };
+                let pos_of_screen = |screen: egui::Pos2| -> Option<Box<Position>> {
+                    let x = (screen.x / scale - 0.5).round() as usize;
+                    let y = (screen.y / scale - 0.5).round() as usize;
+                    if x >= self.layout.width || y >= self.layout.height {
+                        return None;
+                    }
+                    self.layout
+                        .mapping
+                        .iter()
+                        .find_map(|(pos, (pos_x, pos_y))| {
+                            if *pos_x == x && *pos_y == self.layout.height - y - 1 {
+                                Some(pos.clone())
+                            } else {
+                                None
+                            }
+                        })
+                };
+                let hovered_pos: Option<Box<Position>> =
+                    ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
+                // if we clicked, added the hovered piece to the clicked pieces
+                if let Some(hovered_pos) = &hovered_pos
+                    && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+                    && position_is_sticker(hovered_pos, &self.puzzle.shape)
+                {
+                    self.clicked_pieces.insert(hovered_pos.clone());
+                }
                 // TODO: layer mask
                 let gripped_side = match &self.turn_builder {
-                    TurnBuilder::Side { layers, side, .. } => side.clone(),
+                    TurnBuilder::Side { layers, side, .. } => *side,
                     TurnBuilder::Puzzle { .. } => None,
                 };
                 let format_sticker = |sticker: &Sticker| -> StickerFormat {
-                    if let Some(hovered_piece) = hovered_piece
-                        && piece_of_sticker(sticker, &self.puzzle.shape) == hovered_piece
-                    {
-                        return self.hovered_format.clone();
-                    }
-
+                    // if let Some(hovered_piece) = hovered_position
+                    //     && piece_of_sticker(sticker, &self.puzzle.shape) == hovered_piece
+                    // {
+                    //     return self.hovered_format.clone();
+                    // }
                     for clicked_piece in &self.clicked_pieces {
-                        if piece_of_sticker(sticker, &self.puzzle.shape) == *clicked_piece {
+                        if sticker_to_piece(sticker, &self.puzzle.shape) == *clicked_piece {
                             return self.clicked_format.clone();
                         }
                     }
-
                     if let Some(gripped_side) = gripped_side
-                        && side_of_sticker(sticker, &self.puzzle.shape) == gripped_side
+                        && sticker_to_side(sticker, &self.puzzle.shape) == gripped_side
                     {
                         return self.gripped_format.clone();
                     }
-
                     if let Some(filter_stage) = self.filter_stage
                         && let Some(format) = self.filter_sequence.0[filter_stage]
-                            .try_get(&self.puzzle.shape, &sticker)
+                            .try_get(&self.puzzle.shape, sticker)
                     {
                         return format;
                     }
-
                     StickerFormat {
                         outline_color: egui::Color32::from_rgb(100, 100, 100),
                         outline_width: 0.02,
@@ -1299,55 +1346,68 @@ impl eframe::App for App {
                     }
                 };
 
-                match &self.layout {
-                    Layout::TwoD(layout) => {
-                        let painter = ui.painter();
-                        let rect = ui.available_rect_before_wrap();
-                        let scale = f32::min(
-                            rect.width() / layout.width as f32,
-                            rect.height() / layout.height as f32,
-                        );
-                        // TODO: pixel alignment
-                        let rect_of_sticker = |pos: &[Coord]| {
-                            let (x, y) = layout.mapping[pos];
-                            egui::Rect::from_min_size(
-                                egui::Pos2::new(x as f32, (layout.height - y - 1) as f32) * scale,
-                                scale * egui::Vec2::new(1.0, 1.0),
-                            )
-                        };
-                        let draw_sticker = |pos: &[Coord], color: egui::Color32| {
-                            painter.rect_filled(rect_of_sticker(pos), 0.0, color);
-                        };
-                        for pos in Cut::positions(&self.puzzle.shape) {
-                            draw_sticker(&pos, egui::Color32::DARK_GRAY);
-                        }
-                        for (pos, side) in &self.puzzle.stickers {
-                            draw_sticker(pos, side.color());
-                        }
-
-                        // TODO: fancy text sizing
-                        let render_axis_keys = match self.turn_builder {
-                            TurnBuilder::Side { side, .. } => side.is_some(),
-                            TurnBuilder::Puzzle { .. } => true,
-                        };
-                        for (side, pos) in &self.side_positions {
-                            if render_axis_keys && !side.is_positive() {
-                                continue;
-                            }
-                            painter.text(
-                                rect_of_sticker(pos).center(),
-                                egui::Align2::CENTER_CENTER,
-                                if render_axis_keys {
-                                    side.into_axis().axis_key().to_string()
-                                } else {
-                                    side.side_key().to_string()
-                                },
-                                egui::TextStyle::Monospace.resolve(&ctx.style()),
-                                egui::Color32::LIGHT_GRAY,
-                            );
-                        }
-                    }
+                let painter = ui.painter();
+                // TODO: pixel alignment
+                // let rect_of_sticker = |pos: &[Coord]| {
+                //     egui::Rect::from_center_size(
+                //         screen_of_pos(pos),
+                //         egui::Vec2::new(1.0, 1.0) * scale,
+                //     )
+                // };
+                let draw_sticker = |pos: &[Coord], color: egui::Color32, format: &StickerFormat| {
+                    let rect = egui::Rect::from_center_size(
+                        screen_of_pos(pos),
+                        egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
+                    );
+                    // TODO: is unmultiplied correct
+                    painter.rect_filled(
+                        rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            color.r(),
+                            color.g(),
+                            color.b(),
+                            (format.sticker_opacity * 255.0) as u8,
+                        ),
+                    );
+                    painter.rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(format.outline_width * scale, format.outline_color),
+                        egui::StrokeKind::Inside,
+                    );
+                };
+                for pos in Cut::positions(&self.puzzle.shape) {
+                    draw_sticker(&pos, egui::Color32::DARK_GRAY, &self.internal_format);
                 }
+                for (pos, side) in &self.puzzle.stickers {
+                    draw_sticker(pos, side.color(), &format_sticker(pos));
+                }
+
+                // TODO: fancy text sizing
+                let render_axis_keys = match self.turn_builder {
+                    TurnBuilder::Side { side, .. } => side.is_some(),
+                    TurnBuilder::Puzzle { .. } => true,
+                };
+                for (side, pos) in &self.side_positions {
+                    if render_axis_keys && !side.is_positive() {
+                        continue;
+                    }
+                    painter.text(
+                        screen_of_pos(pos),
+                        egui::Align2::CENTER_CENTER,
+                        if render_axis_keys {
+                            side.into_axis().axis_key().to_string()
+                        } else {
+                            side.side_key().to_string()
+                        },
+                        egui::TextStyle::Monospace.resolve(&ctx.style()),
+                        egui::Color32::LIGHT_GRAY,
+                    );
+                }
+                // if let Some(hovered_position) = &hovered_pos {
+                //     draw_sticker(hovered_position, egui::Color32::from_rgb(200, 200, 200));
+                // }
 
                 // painter.text(
                 //     egui::Pos2::new(10.0, ui.available_height() - 10.0),
