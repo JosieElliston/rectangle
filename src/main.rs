@@ -4,8 +4,9 @@ use egui::{
 };
 use itertools::Itertools;
 use rand::prelude::*;
-use std::{default, iter::once};
+use std::iter::once;
 
+// TODO: rename to Color?
 /// sides related by ! are opposite,
 /// rather than by -, so that we can 0 index.
 /// lives in -dim..=dim-1
@@ -52,6 +53,14 @@ impl Side {
             &pos[self.0 as usize]
         } else {
             &neg[!self.0 as usize]
+        }
+    }
+
+    fn get_mut<'a, T>(self, pos: &'a mut [T], neg: &'a mut [T]) -> &'a mut T {
+        if self.is_positive() {
+            &mut pos[self.0 as usize]
+        } else {
+            &mut neg[!self.0 as usize]
         }
     }
 
@@ -189,144 +198,9 @@ impl std::ops::Neg for Coord {
     }
 }
 
-/// any (possibly internal) position
-type Position = [Coord];
-fn position_is_sticker(position: &Position, shape: &[Cut]) -> bool {
-    position
-        .iter()
-        .zip(shape)
-        .filter(|(coord, cut)| coord.0.abs() == cut.0)
-        .count()
-        == 1
-}
-fn position_is_piece(position: &Position, shape: &[Cut]) -> bool {
-    position
-        .iter()
-        .zip(shape)
-        .filter(|(coord, cut)| coord.0.abs() == cut.0 - 1)
-        .count()
-        > 0
-}
-
-/// exactly one of the coords is ±n
-type Sticker = [Coord];
-// #[derive(RefCast)]
-// #[derive(bytemuck::TransparentWrapper)]
-// #[repr(transparent)]
-// struct Sticker(Coord);
-// impl Sticker {
-//     fn piece_of_sticker(&self, shape: &[Cut]) -> Box<Piece> {
-//         let ret = self
-//             .0
-//             .iter()
-//             .zip(shape)
-//             .map(|(coord, cut)| {
-//                 if coord.0 == cut.0 {
-//                     Coord(coord.0 - 1)
-//                 } else if -coord.0 == cut.0 {
-//                     Coord(coord.0 + 1)
-//                 } else {
-//                     *coord
-//                 }
-//             })
-//             .collect::<Box<[Coord]>>();
-//         // Box::new(Piece(ret))
-//         // Box::new(Piece(*ret))
-//         // unsafe { &*(s.as_ref() as *const OsStr as *const Path) }
-//         // ret as Box<Piece>
-//         // let a = Self::ref_cast(&ret);
-//         // ret
-//     }
-// }
-// impl From<&[Coord]> for &Piece {
-//     fn from(coords: &[Coord]) -> Self {
-//         &Piece(*coords)
-//     }
-// }
-fn sticker_to_piece(sticker: &Sticker, shape: &[Cut]) -> Box<Piece> {
-    sticker
-        .iter()
-        .zip(shape)
-        .map(|(coord, cut)| {
-            if coord.0 == cut.0 {
-                Coord(coord.0 - 1)
-            } else if -coord.0 == cut.0 {
-                Coord(coord.0 + 1)
-            } else {
-                *coord
-            }
-        })
-        .collect::<_>()
-}
-
-// TODO: refactor to use this function
-fn sticker_to_side(sticker: &Sticker, shape: &[Cut]) -> Side {
-    sticker
-        .iter()
-        .zip(shape)
-        .enumerate()
-        .filter_map(|(i, (coord, cut))| {
-            if coord.0 == cut.0 {
-                Some(Side::new(i as i16))
-            } else if -coord.0 == cut.0 {
-                Some(Side::new(-(i as i16)))
-            } else {
-                None
-            }
-        })
-        .next()
-        .expect("sticker should be on a side")
-}
-
-/// at least one of the coords is ±(n-1)
-type Piece = [Coord];
-// struct Piece([Coord]);
-// impl Piece {
-//     fn sides_of_piece(&self, shape: &[Cut]) -> Box<[Side]> {
-//         let ret: Box<[Side]> = self
-//             .0
-//             .iter()
-//             .zip(shape)
-//             .enumerate()
-//             .filter_map(|(i, (coord, cut))| {
-//                 if coord.0 + 1 == cut.0 {
-//                     Some(Side::new(i as i16))
-//                 } else if -coord.0 - 1 == cut.0 {
-//                     Some(Side::new(!(i as i16)))
-//                 } else {
-//                     None
-//                 }
-//             })
-//             .collect::<_>();
-//         debug_assert!(!ret.is_empty(), "piece should be on at least one side");
-//         ret
-//     }
-// }
-fn piece_to_sides(piece: &Piece, shape: &[Cut]) -> Box<[Side]> {
-    let ret: Box<[Side]> = piece
-        .iter()
-        .zip(shape)
-        .enumerate()
-        .filter_map(|(i, (coord, cut))| {
-            if coord.0 + 1 == cut.0 {
-                Some(Side::new(i as i16))
-            } else if -coord.0 - 1 == cut.0 {
-                Some(Side::new(!(i as i16)))
-            } else {
-                None
-            }
-        })
-        .collect::<_>();
-    debug_assert!(!ret.is_empty(), "piece should be on at least one side");
-    ret
-}
-
-// #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-// struct Pos(Vec<Coord>);
-
+// TODO: rename to layer?
 /// A shape is a \[Cut], so a 2x3x4 would be a \[Cut(2), Cut(3), Cut(4)]
 /// lives in [1, 2, 3, ...]
-// TODO: better name
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Cut(i16);
 impl Cut {
@@ -337,27 +211,201 @@ impl Cut {
             .chain(once(self.0))
             .map(Coord)
     }
-
-    /// gives all positions for this shape, including internal ones
-    fn positions(shape: &[Cut]) -> impl Iterator<Item = Box<[Coord]>> {
-        shape
-            .iter()
-            .map(|cut| cut.coords().collect::<Vec<_>>())
-            .multi_cartesian_product()
-            .map(Vec::into_boxed_slice)
-            // discard ones that are on multiple sides, because that's impossible
-            .filter(move |pos| {
-                pos.iter()
-                    .zip(shape)
-                    .filter(|(coord, cut)| coord.0.abs() == cut.0)
-                    .count()
-                    <= 1
-            })
-    }
 }
 
 // #[derive(Clone, Debug, PartialEq, Eq)]
 // struct Shape(Vec<Cut>);
+
+/// any (possibly internal) position
+/// at most one of the coords is ±n
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Position(Vec<Coord>);
+impl Position {
+    fn try_new(shape: &[Cut], coords: Vec<Coord>) -> Option<Self> {
+        if coords
+            .iter()
+            .zip(shape)
+            .filter(|(coord, cut)| coord.0.abs() == cut.0)
+            .count()
+            <= 1
+        {
+            Some(Self(coords))
+        } else {
+            None
+        }
+    }
+
+    fn new(shape: &[Cut], coords: Vec<Coord>) -> Self {
+        if cfg!(debug_assertions) {
+            Self::try_new(shape, coords).unwrap()
+        } else {
+            Self(coords)
+        }
+    }
+
+    /// gives all positions for this shape, including internal ones
+    fn all(shape: &[Cut]) -> impl Iterator<Item = Self> {
+        shape
+            .iter()
+            .map(|cut| cut.coords().collect::<Vec<_>>())
+            .multi_cartesian_product()
+            .filter_map(|coords| Position::try_new(shape, coords))
+    }
+
+    // /// at most one of the coords is ±n
+    // fn is_valid(&self, shape: &[Cut]) -> bool {
+    //     self.0
+    //         .iter()
+    //         .zip(shape)
+    //         .filter(|(coord, cut)| coord.0.abs() == cut.0)
+    //         .count()
+    //         <= 1
+    // }
+
+    /// exactly one of the coords is ±n
+    fn is_sticker(&self, shape: &[Cut]) -> bool {
+        self.0
+            .iter()
+            .zip(shape)
+            .filter(|(coord, cut)| coord.0.abs() == cut.0)
+            .count()
+            == 1
+    }
+
+    /// at least one of the coords is ±(n-1)
+    /// none of the coords are ±n
+    fn is_piece(&self, shape: &[Cut]) -> bool {
+        self.0
+            .iter()
+            .zip(shape)
+            .filter(|(coord, cut)| coord.0.abs() == cut.0 - 1)
+            .count()
+            > 0
+            && self
+                .0
+                .iter()
+                .zip(shape)
+                .filter(|(coord, cut)| coord.0.abs() == cut.0)
+                .count()
+                == 0
+    }
+}
+// impl From<Sticker> for Position {
+//     fn from(sticker: Sticker) -> Self {
+//         sticker.0
+//     }
+// }
+// impl From<Piece> for Position {
+//     fn from(piece: Piece) -> Self {
+//         piece.0
+//     }
+// }
+
+/// exactly one of the coords is ±n
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Sticker(Position);
+impl Sticker {
+    fn try_from(shape: &[Cut], pos: Position) -> Option<Self> {
+        pos.is_sticker(shape).then_some(Self(pos))
+    }
+
+    fn try_new(shape: &[Cut], coords: Vec<Coord>) -> Option<Self> {
+        Position::try_new(shape, coords).and_then(|pos| Self::try_from(shape, pos))
+    }
+
+    fn new(shape: &[Cut], coords: Vec<Coord>) -> Self {
+        if cfg!(debug_assertions) {
+            Self::try_new(shape, coords).unwrap()
+        } else {
+            Self(Position(coords))
+        }
+    }
+
+    /// the piece this sticker lies on
+    fn piece(&self, shape: &[Cut]) -> Piece {
+        Piece::new(
+            shape,
+            self.0
+                .0
+                .iter()
+                .zip(shape)
+                .map(|(coord, cut)| {
+                    if coord.0 == cut.0 {
+                        Coord(coord.0 - 1)
+                    } else if -coord.0 == cut.0 {
+                        Coord(coord.0 + 1)
+                    } else {
+                        *coord
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    // TODO: refactor to use this function
+    /// which side this sticker lies on
+    fn side(&self, shape: &[Cut]) -> Side {
+        self.0
+            .0
+            .iter()
+            .zip(shape)
+            .enumerate()
+            .find_map(|(i, (coord, cut))| {
+                if coord.0 == cut.0 {
+                    Some(Side::new(i as i16))
+                } else if -coord.0 == cut.0 {
+                    Some(Side::new(!(i as i16)))
+                } else {
+                    None
+                }
+            })
+            .expect("sticker should be on a side")
+    }
+}
+
+/// at least one of the coords is ±(n-1)
+/// none of the coords are ±n
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Piece(Position);
+impl Piece {
+    fn try_from(shape: &[Cut], pos: Position) -> Option<Self> {
+        pos.is_piece(shape).then_some(Self(pos))
+    }
+
+    fn try_new(shape: &[Cut], coords: Vec<Coord>) -> Option<Self> {
+        Position::try_new(shape, coords).and_then(|pos| Self::try_from(shape, pos))
+    }
+
+    fn new(shape: &[Cut], coords: Vec<Coord>) -> Self {
+        if cfg!(debug_assertions) {
+            Self::try_new(shape, coords).unwrap()
+        } else {
+            Self(Position(coords))
+        }
+    }
+
+    /// which sides this sticker lies on
+    fn sides(&self, shape: &[Cut]) -> impl Iterator<Item = Side> {
+        let mut ret = self
+            .0
+            .0
+            .iter()
+            .zip(shape)
+            .enumerate()
+            .filter_map(|(i, (coord, cut))| {
+                if coord.0 + 1 == cut.0 {
+                    Some(Side::new(i as i16))
+                } else if 1 - coord.0 == cut.0 {
+                    Some(Side::new(!(i as i16)))
+                } else {
+                    None
+                }
+            })
+            .peekable();
+        debug_assert!(ret.peek().is_some(), "piece should be on at least one side");
+        ret
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LayerMask(Vec<bool>);
@@ -422,6 +470,7 @@ impl Turn {
     }
 }
 
+// TODO: don't store shape here
 #[derive(Clone, Debug)]
 enum TurnBuilder {
     Side {
@@ -559,61 +608,21 @@ enum TurnError {
 struct Puzzle {
     shape: Vec<Cut>,
     // #[serde(with = "serde_map")]
-    stickers: HashMap<Box<[Coord]>, Side>,
+    stickers: HashMap<Sticker, Side>,
 }
 impl Puzzle {
     #[inline(never)]
     fn new(shape: &[Cut]) -> Self {
-        // if d == 1 {
-        //     // i think multi_cartesian_product returns empty iterator for the empty product
-
-        //     return Puzzle {
-        //         n,
-        //         d,
-        //         stickers: HashMap::from_iter([
-        //             (vec![Coord(-n)], Side(!0)),
-        //             (vec![Coord(n)], Side(0)),
-        //         ]),
-        //     };
-        // }
-
-        // let mut stickers = HashMap::new();
-        // for (side, coords) in [n, -n].into_iter().cartesian_product(
-        //     (0..d - 1)
-        //         .map(|_| (1-n..n).step_by(2))
-        //         .multi_cartesian_product(),
-        // ) {
-        //     let mut pos = vec![side];
-        //     pos.extend(&coords);
-        //     for f in 0..(d as i16) {
-        //         // TODO: this is bad
-        //         stickers.insert(
-        //             pos.clone().into_iter().map(Coord).collect(),
-        //             if side >= 0 { Side(f) } else { Side(!f) },
-        //         );
-        //         pos.rotate_right(1);
-        //     }
-        // }
-        let mut stickers = HashMap::new();
-        for pos in Cut::positions(shape) {
-            let Some(axis) = pos
-                .iter()
-                .zip(shape)
-                .position(|(coord, cut)| coord.0.abs() == cut.0)
-            else {
-                // it was an internal position
-                continue;
-            };
-            let side = if pos[axis].0 >= 0 {
-                Side(axis as i16)
-            } else {
-                Side(!(axis as i16))
-            };
-            stickers.insert(pos, side);
-        }
         Puzzle {
             shape: shape.to_vec(),
-            stickers,
+            stickers: Position::all(shape)
+                .filter_map(|pos| {
+                    Sticker::try_from(shape, pos).map(|sticker| {
+                        let side = sticker.side(shape);
+                        (sticker, side)
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -621,38 +630,16 @@ impl Puzzle {
     fn is_solved(&self) -> bool {
         let mut pos_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
         let mut neg_colors: Vec<Option<Side>> = vec![None; self.shape.len()];
-        for (pos, color) in &self.stickers {
-            debug_assert!(
-                pos.iter()
-                    .zip(&self.shape)
-                    .filter(|(coord, cut)| coord.0.abs() == cut.0)
-                    .count()
-                    == 1,
-                "each sticker must be on exactly one side"
-            );
-            let axis = pos
-                .iter()
-                .zip(&self.shape)
-                .position(|(coord, cut)| coord.0.abs() == cut.0)
-                .unwrap();
-            let side = if pos[axis].0 >= 0 {
-                Side(axis as i16)
-            } else {
-                Side(!(axis as i16))
-            };
-            let old_entry = if side.0 >= 0 {
-                &mut pos_colors[axis]
-            } else {
-                &mut neg_colors[axis]
-            };
-            match old_entry {
-                None => *old_entry = Some(*color),
-                Some(old_color) => {
-                    if *old_color != *color {
-                        return false;
-                    }
-                }
+        for (sticker, color) in &self.stickers {
+            let entry = sticker
+                .side(&self.shape)
+                .get_mut(&mut pos_colors, &mut neg_colors);
+            if let Some(old_color) = entry
+                && old_color != color
+            {
+                return false;
             }
+            *entry = Some(*color);
         }
         true
     }
@@ -727,36 +714,37 @@ impl Puzzle {
             return Err(TurnError::UndefinedPlane);
         }
         let mut new_stickers = Vec::new();
-        let mut from_pos = vec![Coord(0); self.shape.len()].into_boxed_slice();
-        for (pos, old_sticker) in &self.stickers {
+        let mut from_pos = Sticker(Position(vec![Coord(0); self.shape.len()]));
+        for (pos, old_color) in &self.stickers {
             // TODO: layer mask
             // if if side.0 >= 0 {
             //     layers.0[pos[side.0 as usize].0 as usize]
             // } else {
             //     layers.0[pos[(!side.0) as usize].0 as usize]
             // } {
+            // TODO: rename pos to sticker
             if if side.is_positive() {
                 ((self.shape[side.into_usize()].0 - 1)..=self.shape[side.into_usize()].0)
-                    .contains(&pos[side.into_usize()].0)
+                    .contains(&pos.0.0[side.into_usize()].0)
             } else {
                 ((-self.shape[(!side).into_usize()].0)..=(1 - self.shape[(!side).into_usize()].0))
-                    .contains(&pos[(!side).into_usize()].0)
+                    .contains(&pos.0.0[(!side).into_usize()].0)
             } {
                 // TODO: compute to_pos instead of from_pos???
 
                 // let mut from_pos = pos.clone();
                 // this is actually faster, i checked
-                from_pos.clone_from_slice(pos);
+                from_pos.0.0.clone_from_slice(&pos.0.0);
 
                 // for cuboids, if you can't turn 90 degrees, just turn 180 degrees
                 if self.shape[from.into_usize()] == self.shape[to.into_usize()] {
-                    from_pos[from.into_usize()] = pos[to.into_usize()];
-                    from_pos[to.into_usize()] = -pos[from.into_usize()];
+                    from_pos.0.0[from.into_usize()] = pos.0.0[to.into_usize()];
+                    from_pos.0.0[to.into_usize()] = -pos.0.0[from.into_usize()];
                 } else {
-                    from_pos[from.into_usize()] = -pos[from.into_usize()];
-                    from_pos[to.into_usize()] = -pos[to.into_usize()];
+                    from_pos.0.0[from.into_usize()] = -pos.0.0[from.into_usize()];
+                    from_pos.0.0[to.into_usize()] = -pos.0.0[to.into_usize()];
                 }
-                new_stickers.push((old_sticker as *const _, self.stickers[&from_pos]));
+                new_stickers.push((old_color as *const _, self.stickers[&from_pos]));
             }
         }
         for (old_sticker, new_sticker) in new_stickers {
@@ -778,8 +766,8 @@ impl Puzzle {
         let mut new_stickers = Vec::new();
         for pos in self.stickers.keys() {
             let mut from_pos = pos.clone();
-            from_pos[from.into_usize()] = pos[to.into_usize()];
-            from_pos[to.into_usize()] = -pos[from.into_usize()];
+            from_pos.0.0[from.into_usize()] = pos.0.0[to.into_usize()];
+            from_pos.0.0[to.into_usize()] = -pos.0.0[from.into_usize()];
             new_stickers.push((pos.clone(), self.stickers[&from_pos]));
         }
         self.stickers = HashMap::from_iter(new_stickers);
@@ -788,7 +776,6 @@ impl Puzzle {
 
     #[inline(never)]
     fn turn(&mut self, turn: &Turn) -> Result<(), TurnError> {
-        // println!("turn: {turn:?}");
         match turn {
             Turn::Side(turn) => self.turn_side(turn),
             Turn::Puzzle(turn) => self.turn_puzzle(turn),
@@ -843,22 +830,11 @@ impl Layout2dBuilder {
                 mapping: vec![(Vec::new(), (0, 0))],
             };
         }
-        // if d == 1 {
-        //     return Layout2d {
-        //         x_hi: n + 1,
-        //         height: 0,
-        //         mapping: HashMap::from_iter(
-        //             Cut(n)
-        //                 .coords()
-        //                 .enumerate()
-        //                 .map(|(i, c)| (vec![c], (i as i16, 0_i16))),
-        //         ),
-        //     };
-        // }
+        // TODO: refactor to use Position
         let horizontal = shape.len() % 2 == 1;
         let lower = Self::new(&shape[..shape.len() - 1]);
         let last = *shape.last().unwrap();
-        debug_assert_eq!(last.coords().count(), last.0 as usize + 2);
+        assert_eq!(last.coords().count(), last.0 as usize + 2);
         let mut ret = Self {
             width: 0,
             height: 0,
@@ -874,8 +850,9 @@ impl Layout2dBuilder {
                     (pos, xy)
                 })
                 .collect();
-
             if new_coord.0.abs() == last.0 {
+                // only keep valid positions
+                // we only need to check this if it's a cap
                 lower.mapping.retain(|(pos, _xy)| {
                     pos.iter()
                         .zip(shape)
@@ -905,10 +882,8 @@ impl Layout2dBuilder {
             };
             if horizontal {
                 lower.right(shift);
-                // assert!(ret.x_hi <= lower.x_lo);
             } else {
                 lower.down(shift);
-                // assert!(ret.height <= lower.y_lo);
             }
             ret.union(lower);
         }
@@ -947,8 +922,8 @@ impl Layout2dBuilder {
 struct Layout2d {
     width: usize,
     height: usize,
-    mapping: HashMap<Box<[Coord]>, (usize, usize)>,
-    inverse: HashMap<(usize, usize), Box<[Coord]>>,
+    mapping: HashMap<Position, (usize, usize)>,
+    inverse: HashMap<(usize, usize), Position>,
 }
 impl Layout2d {
     #[inline(never)]
@@ -961,12 +936,12 @@ impl Layout2d {
                 .mapping
                 .clone()
                 .into_iter()
-                .map(|(pos, xy)| (pos.into(), xy))
+                .map(|(pos, xy)| (Position::new(shape, pos), xy))
                 .collect(),
             inverse: builder
                 .mapping
                 .into_iter()
-                .map(|(pos, xy)| (xy, pos.into()))
+                .map(|(pos, xy)| (xy, Position::new(shape, pos)))
                 .collect(),
         }
     }
@@ -1040,13 +1015,12 @@ struct FilterTerm {
     cant_have: HashSet<Side>,
 }
 impl FilterTerm {
-    fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
-        let sides = piece_to_sides(piece, shape);
-        for side in &sides {
-            if !self.must_have.contains(side) {
+    fn matches(&self, shape: &[Cut], piece: &Piece) -> bool {
+        for side in piece.sides(shape) {
+            if !self.must_have.contains(&side) {
                 return false;
             }
-            if self.cant_have.contains(side) {
+            if self.cant_have.contains(&side) {
                 return false;
             }
         }
@@ -1061,7 +1035,7 @@ struct Filter {
     format: StickerFormatBuilder,
 }
 impl Filter {
-    fn matches(&self, shape: &[Cut], piece: &[Coord]) -> bool {
+    fn matches(&self, shape: &[Cut], piece: &Piece) -> bool {
         self.terms.iter().any(|term| term.matches(shape, piece))
     }
 }
@@ -1094,9 +1068,10 @@ struct App {
     puzzle: Puzzle,
     layout: Layout2d,
     /// where the labels for the sides go
-    side_positions: HashMap<Side, Box<[Coord]>>,
+    /// the centers if odd and offset in the positive direction if even
+    side_positions: HashMap<Side, Piece>,
     turn_builder: TurnBuilder,
-    clicked_pieces: HashSet<Box<Piece>>,
+    clicked_pieces: HashSet<Piece>,
     internal_color: Color32,
     internal_format: StickerFormat,
     hovered_format: StickerFormatBuilder,
@@ -1128,7 +1103,7 @@ impl App {
             "side should be less than or equal to {}",
             Self::MAX_LAYERS
         );
-        // println!("{:?}", Cut::positions(shape).collect::<Vec<_>>());
+        // println!("{:?}", Position::all(shape).collect::<Vec<_>>());
         // panic!();
 
         let start = std::time::Instant::now();
@@ -1152,7 +1127,7 @@ impl App {
         // }
 
         #[inline(never)]
-        fn get_side_positions(shape: &[Cut]) -> HashMap<Side, Box<[Coord]>> {
+        fn get_side_positions(shape: &[Cut]) -> HashMap<Side, Piece> {
             let mut side_positions = HashMap::new();
             for (axis, cut) in shape.iter().enumerate() {
                 {
@@ -1160,18 +1135,18 @@ impl App {
                     let mut pos = shape
                         .iter()
                         .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
-                        .collect::<Box<[Coord]>>();
+                        .collect::<Vec<_>>();
                     pos[axis] = Coord(cut.0 - 1);
-                    side_positions.insert(Side(axis as i16), pos);
+                    side_positions.insert(Side(axis as i16), Piece::new(shape, pos));
                 }
                 {
                     // negative
                     let mut pos = shape
                         .iter()
                         .map(|cut| if cut.0 % 2 == 1 { Coord(0) } else { Coord(1) })
-                        .collect::<Box<[Coord]>>();
+                        .collect::<Vec<_>>();
                     pos[axis] = Coord(1 - cut.0);
-                    side_positions.insert(Side(!(axis as i16)), pos);
+                    side_positions.insert(Side(!(axis as i16)), Piece::new(shape, pos));
                 }
             }
             side_positions
@@ -1232,41 +1207,41 @@ impl App {
         }
     }
 
-    #[inline(never)]
-    fn render_png(&self, path: &str) {
-        // let Layout::TwoD(layout) = &self.layout else {
-        //     panic!("render_png only works for Layout2d");
-        // };
-        let start = std::time::Instant::now();
-        let mut buf = vec![0; self.layout.width * self.layout.height * 3];
+    // #[inline(never)]
+    // fn render_png(&self, path: &str) {
+    //     // let Layout::TwoD(layout) = &self.layout else {
+    //     //     panic!("render_png only works for Layout2d");
+    //     // };
+    //     let start = std::time::Instant::now();
+    //     let mut buf = vec![0; self.layout.width * self.layout.height * 3];
 
-        let mut draw_sticker = |pos: &[Coord], color: Color32| {
-            let (x, y) = self.layout.mapping[pos];
-            let i = ((self.layout.height - y - 1) * self.layout.width + x) * 3;
-            buf[i] = color.r();
-            buf[i + 1] = color.g();
-            buf[i + 2] = color.b();
-        };
+    //     let mut draw_sticker = |pos: &Position, color: Color32| {
+    //         let (x, y) = self.layout.mapping[pos];
+    //         let i = ((self.layout.height - y - 1) * self.layout.width + x) * 3;
+    //         buf[i] = color.r();
+    //         buf[i + 1] = color.g();
+    //         buf[i + 2] = color.b();
+    //     };
 
-        for pos in Cut::positions(&self.puzzle.shape) {
-            draw_sticker(&pos, Color32::GRAY);
-        }
-        for (pos, side) in &self.puzzle.stickers {
-            draw_sticker(pos, side.color());
-        }
-        println!("buffer gen in {:?}", start.elapsed());
+    //     for pos in Position::all(&self.puzzle.shape) {
+    //         draw_sticker(&pos, Color32::GRAY);
+    //     }
+    //     for (pos, side) in &self.puzzle.stickers {
+    //         draw_sticker(&pos.0, side.color());
+    //     }
+    //     println!("buffer gen in {:?}", start.elapsed());
 
-        let start = std::time::Instant::now();
-        image::save_buffer(
-            path,
-            &buf,
-            self.layout.width as _,
-            self.layout.height as _,
-            image::ColorType::Rgb8,
-        )
-        .unwrap();
-        println!("image save in {:?}", start.elapsed());
-    }
+    //     let start = std::time::Instant::now();
+    //     image::save_buffer(
+    //         path,
+    //         &buf,
+    //         self.layout.width as _,
+    //         self.layout.height as _,
+    //         image::ColorType::Rgb8,
+    //     )
+    //     .unwrap();
+    //     println!("image save in {:?}", start.elapsed());
+    // }
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1318,12 +1293,13 @@ impl eframe::App for App {
                     rect.width() / self.layout.width as f32,
                     rect.height() / self.layout.height as f32,
                 );
+
                 let screen_of_pos = |pos: &Position| -> egui::Pos2 {
                     let (x, y) = self.layout.mapping[pos];
                     egui::Pos2::new(0.5 + x as f32, 0.5 + (self.layout.height - 1 - y) as f32)
                         * scale
                 };
-                let pos_of_screen = |screen: egui::Pos2| -> Option<Box<Position>> {
+                let pos_of_screen = |screen: egui::Pos2| -> Option<Position> {
                     let x = (screen.x / scale - 0.5).round() as i32;
                     let y = self.layout.height as i32 - 1 - (screen.y / scale - 0.5).round() as i32;
                     if !(0..self.layout.width as _).contains(&x)
@@ -1333,20 +1309,16 @@ impl eframe::App for App {
                     }
                     self.layout.inverse.get(&(x as usize, y as usize)).cloned()
                 };
-                let hovered_pos: Option<Box<Position>> =
+
+                let hovered_pos: Option<Position> =
                     ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
-                // TODO: rewrite with map
-                let hovered_piece = if let Some(hovered_pos) = &hovered_pos {
-                    if position_is_sticker(hovered_pos, &self.puzzle.shape) {
-                        Some(sticker_to_piece(hovered_pos, &self.puzzle.shape))
-                    } else if position_is_piece(hovered_pos, &self.puzzle.shape) {
-                        Some(hovered_pos.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                let hovered_piece = hovered_pos.and_then(|pos| {
+                    Piece::try_from(&self.puzzle.shape, pos.clone()).or_else(|| {
+                        Sticker::try_from(&self.puzzle.shape, pos.clone())
+                            .map(|sticker| sticker.piece(&self.puzzle.shape))
+                    })
+                });
+
                 // if we clicked, added the hovered piece to the clicked pieces
                 if let Some(hovered_piece) = &hovered_piece
                     && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
@@ -1357,6 +1329,7 @@ impl eframe::App for App {
                         self.clicked_pieces.insert(hovered_piece.clone());
                     }
                 }
+
                 // TODO: layer mask
                 let gripped_side = match &self.turn_builder {
                     TurnBuilder::Side { layers, side, .. } => *side,
@@ -1365,23 +1338,25 @@ impl eframe::App for App {
                 let format_sticker = |sticker: &Sticker| -> StickerFormat {
                     let mut ret = StickerFormatBuilder::NONE;
                     if let Some(hovered_piece) = hovered_piece.clone()
-                        && sticker_to_piece(sticker, &self.puzzle.shape) == hovered_piece
+                        && sticker.piece(&self.puzzle.shape) == hovered_piece
                     {
                         ret.update(&self.hovered_format);
                     }
                     for clicked_piece in &self.clicked_pieces {
-                        if sticker_to_piece(sticker, &self.puzzle.shape) == *clicked_piece {
+                        if sticker.piece(&self.puzzle.shape) == *clicked_piece {
                             ret.update(&self.clicked_format);
                         }
                     }
                     if let Some(gripped_side) = gripped_side
-                        && sticker_to_side(sticker, &self.puzzle.shape) == gripped_side
+                        && sticker.side(&self.puzzle.shape) == gripped_side
                     {
                         ret.update(&self.gripped_format);
                     }
                     if let Some(filter_stage) = self.filter_stage {
                         for filter in &self.filter_sequence.0[filter_stage].0 {
-                            if filter.matches(&self.puzzle.shape, sticker) {
+                            if filter
+                                .matches(&self.puzzle.shape, &sticker.piece(&self.puzzle.shape))
+                            {
                                 ret.update(&filter.format);
                             }
                         }
@@ -1393,13 +1368,7 @@ impl eframe::App for App {
 
                 let painter = ui.painter();
                 // TODO: pixel alignment
-                // let rect_of_sticker = |pos: &[Coord]| {
-                //     egui::Rect::from_center_size(
-                //         screen_of_pos(pos),
-                //         egui::Vec2::new(1.0, 1.0) * scale,
-                //     )
-                // };
-                let draw_sticker = |pos: &[Coord], color: Color32, format: &StickerFormat| {
+                let draw_position = |pos: &Position, color: Color32, format: &StickerFormat| {
                     let rect = egui::Rect::from_center_size(
                         screen_of_pos(pos),
                         egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
@@ -1422,11 +1391,12 @@ impl eframe::App for App {
                         egui::StrokeKind::Inside,
                     );
                 };
-                for pos in Cut::positions(&self.puzzle.shape) {
-                    draw_sticker(&pos, Color32::DARK_GRAY, &self.internal_format);
+
+                for pos in Position::all(&self.puzzle.shape) {
+                    draw_position(&pos, self.internal_color, &self.internal_format);
                 }
                 for (pos, side) in &self.puzzle.stickers {
-                    draw_sticker(pos, side.color(), &format_sticker(pos));
+                    draw_position(&pos.0, side.color(), &format_sticker(pos));
                 }
 
                 // TODO: fancy text sizing
@@ -1439,7 +1409,7 @@ impl eframe::App for App {
                         continue;
                     }
                     painter.text(
-                        screen_of_pos(pos),
+                        screen_of_pos(&pos.0),
                         egui::Align2::CENTER_CENTER,
                         if render_axis_keys {
                             side.into_axis().axis_key().to_string()
@@ -1450,9 +1420,6 @@ impl eframe::App for App {
                         Color32::LIGHT_GRAY,
                     );
                 }
-                // if let Some(hovered_position) = &hovered_pos {
-                //     draw_sticker(hovered_position, Color32::from_rgb(200, 200, 200));
-                // }
 
                 // painter.text(
                 //     egui::Pos2::new(10.0, ui.available_height() - 10.0),
@@ -1471,7 +1438,8 @@ fn main() -> eframe::Result {
 
     // let mut app = App::new(&[3, 3, 4, 5, 6, 7, 8].map(Cut));
     // app.puzzle.scramble(&mut rand::rng());
-    // app.render_png("render.png");
+    // // app.render_png("render.png");
+    // std::hint::black_box(app);
     // panic!();
 
     // let app = App::new(&[2, 3, 4].map(Cut));
@@ -1704,5 +1672,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_sticker_side() {
+        let shape = &[3, 3, 3].map(Cut);
+        let sticker = Sticker::new(shape, vec![Coord(3), Coord(0), Coord(0)]);
+        assert_eq!(sticker.side(shape), Side::new(0));
+        let sticker = Sticker::new(shape, vec![Coord(-3), Coord(0), Coord(0)]);
+        assert_eq!(sticker.side(shape), Side::new(!0));
+    }
+
+    #[test]
+    fn test_piece_side() {
+        let shape = &[3, 3, 3].map(Cut);
+        let piece = Piece::new(shape, vec![Coord(2), Coord(0), Coord(0)]);
+        assert_eq!(piece.sides(shape).collect::<Vec<_>>(), vec![Side::new(0)]);
+        let piece = Piece::new(shape, vec![Coord(-2), Coord(0), Coord(0)]);
+        assert_eq!(piece.sides(shape).collect::<Vec<_>>(), vec![Side::new(!0)]);
+        let piece = Piece::new(shape, vec![Coord(2), Coord(2), Coord(0)]);
+        assert_eq!(
+            piece.sides(shape).collect::<Vec<_>>(),
+            vec![Side::new(0), Side::new(1)]
+        );
+        let piece = Piece::new(shape, vec![Coord(-2), Coord(2), Coord(0)]);
+        assert_eq!(
+            piece.sides(shape).collect::<Vec<_>>(),
+            vec![Side::new(!0), Side::new(1)]
+        );
     }
 }
