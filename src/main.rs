@@ -6,7 +6,6 @@ use itertools::Itertools;
 use rand::prelude::*;
 use std::iter::once;
 
-// TODO: rename to Color?
 /// sides related by ! are opposite,
 /// rather than by -, so that we can 0 index.
 /// lives in -dim..=dim-1
@@ -94,7 +93,7 @@ impl Side {
     }
 
     fn color(self) -> Color32 {
-        let pos_colors: &[Color32] = &[
+        const POS_COLORS: &[Color32] = &[
             Color32::from_rgb(255, 0, 0),
             Color32::from_rgb(255, 255, 255),
             Color32::from_rgb(0, 255, 0),
@@ -106,7 +105,7 @@ impl Side {
             Color32::from_rgb(156, 245, 66),
             Color32::from_rgb(7, 133, 23),
         ];
-        let neg_colors: &[Color32] = &[
+        const NEG_COLORS: &[Color32] = &[
             Color32::from_rgb(255, 128, 0),
             Color32::from_rgb(255, 255, 0),
             Color32::from_rgb(0, 128, 255),
@@ -118,7 +117,7 @@ impl Side {
             Color32::from_rgb(66, 212, 245),
             Color32::from_rgb(47, 47, 189),
         ];
-        *self.get(pos_colors, neg_colors)
+        *self.get(POS_COLORS, NEG_COLORS)
     }
 }
 impl std::ops::Not for Side {
@@ -137,6 +136,7 @@ impl std::ops::Not for Side {
 struct Axis(Side);
 impl Axis {
     fn new(axis: i16) -> Self {
+        debug_assert!(0 <= axis, "axis should be non-negative");
         debug_assert!(
             axis < App::MAX_DIM as _,
             "axis should be less than {}",
@@ -177,6 +177,21 @@ impl Axis {
 //     fn from(axis: Axis) -> Self {
 //         axis.0
 //     }
+// }
+// impl TryFrom<Side> for Axis {
+//     type Error = &'static str;
+
+//     fn try_from(side: Side) -> Result<Self, Self::Error> {
+//         if 0 <= side.0 {
+//             Ok(Axis(side))
+//         } else {
+//             Err("side must be non-negative")
+//         }
+//     }
+// }
+// impl TryFrom<i16> for Axis
+// impl TryFrom<Axis> for Side {
+
 // }
 // impl From<Axis> for usize {
 //     fn from(axis: Axis) -> Self {
