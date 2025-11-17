@@ -1,5 +1,5 @@
-use egui::{
-    Color32,
+use eframe::egui::{
+    self, Color32,
     ahash::{HashMap, HashMapExt, HashSet, HashSetExt},
 };
 use itertools::Itertools;
