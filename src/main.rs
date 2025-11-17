@@ -928,20 +928,23 @@ struct Layout2d {
 impl Layout2d {
     #[inline(never)]
     fn new(shape: &[Cut]) -> Self {
-        let builder = Layout2dBuilder::new(shape);
+        let mapping = Layout2dBuilder::new(shape).mapping;
+        // shrink the margins
+        let x_min = mapping.iter().map(|(_pos, (x, _y))| *x).min().unwrap();
+        let y_min = mapping.iter().map(|(_pos, (_x, y))| *y).min().unwrap();
+        let x_max = mapping.iter().map(|(_pos, (x, _y))| *x).max().unwrap();
+        let y_max = mapping.iter().map(|(_pos, (_x, y))| *y).max().unwrap();
         Layout2d {
-            width: builder.width,
-            height: builder.height,
-            mapping: builder
-                .mapping
+            width: x_max - x_min + 1,
+            height: y_max - y_min + 1,
+            mapping: mapping
                 .clone()
                 .into_iter()
-                .map(|(pos, xy)| (Position::new(shape, pos), xy))
+                .map(|(pos, (x, y))| (Position::new(shape, pos), (x - x_min, y - y_min)))
                 .collect(),
-            inverse: builder
-                .mapping
+            inverse: mapping
                 .into_iter()
-                .map(|(pos, xy)| (xy, Position::new(shape, pos)))
+                .map(|(pos, (x, y))| ((x - x_min, y - y_min), Position::new(shape, pos)))
                 .collect(),
         }
     }
@@ -1015,7 +1018,7 @@ struct FilterTerm {
     cant_have: HashSet<Side>,
 }
 impl FilterTerm {
-    fn matches(&self, shape: &[Cut], piece: &Piece) -> bool {
+    fn contains(&self, shape: &[Cut], piece: &Piece) -> bool {
         for side in piece.sides(shape) {
             if !self.must_have.contains(&side) {
                 return false;
@@ -1028,15 +1031,15 @@ impl FilterTerm {
     }
 }
 
-/// the filter matches a piece if it matches any of the terms
+/// the filter contains a piece if it matches any of the terms
 #[derive(Clone, Debug)]
 struct Filter {
     terms: Vec<FilterTerm>,
     format: StickerFormatBuilder,
 }
 impl Filter {
-    fn matches(&self, shape: &[Cut], piece: &Piece) -> bool {
-        self.terms.iter().any(|term| term.matches(shape, piece))
+    fn contains(&self, shape: &[Cut], piece: &Piece) -> bool {
+        self.terms.iter().any(|term| term.contains(shape, piece))
     }
 }
 
@@ -1259,13 +1262,12 @@ impl eframe::App for App {
                             repeat,
                             modifiers: _,
                         } = event
+                            && *pressed
+                            && !repeat
+                            && let Some(turn) = self.turn_builder.update(*key)
                         {
-                            if *pressed && !repeat {
-                                if let Some(turn) = self.turn_builder.update(*key) {
-                                    self.puzzle.turn(&turn);
-                                    println!("solved: {}", self.puzzle.is_solved());
-                                }
-                            }
+                            self.puzzle.turn(&turn);
+                            println!("solved: {}", self.puzzle.is_solved());
                         }
                     }
                 });
@@ -1275,33 +1277,22 @@ impl eframe::App for App {
                     self.puzzle.scramble(&mut rand::rng());
                 }
 
-                // assert!(self.puzzle.shape.len() == 3);
-                // fn project_3_2(coords: (f32, f32, f32)) -> (f32, f32) {
-                //     (coords.0, coords.1)
-                // }
-                // fn pos_to_vertexes_3(
-                //     pos: &[Coord]
-                // ) -> Vec<(f32, f32, f32)>  {
-                //     assert!(pos.len() == 3);
-                // }
-
-                // puzzle: &Puzzle, hovered: Option<&Piece>, clicked: &[&Piece], gripped: Option<Side>,
-
                 // draw puzzle
-                let rect = ui.available_rect_before_wrap();
+                // we want 1 sticker of margin on each side
+                let rect = ctx.content_rect();
                 let scale = f32::min(
-                    rect.width() / self.layout.width as f32,
-                    rect.height() / self.layout.height as f32,
+                    rect.width() / (self.layout.width + 2) as f32,
+                    rect.height() / (self.layout.height + 2) as f32,
                 );
 
                 let screen_of_pos = |pos: &Position| -> egui::Pos2 {
                     let (x, y) = self.layout.mapping[pos];
-                    egui::Pos2::new(0.5 + x as f32, 0.5 + (self.layout.height - 1 - y) as f32)
+                    egui::Pos2::new(1.5 + x as f32, 1.5 + (self.layout.height - 1 - y) as f32)
                         * scale
                 };
                 let pos_of_screen = |screen: egui::Pos2| -> Option<Position> {
-                    let x = (screen.x / scale - 0.5).round() as i32;
-                    let y = self.layout.height as i32 - 1 - (screen.y / scale - 0.5).round() as i32;
+                    let x = (screen.x / scale - 1.5).round() as i32;
+                    let y = self.layout.height as i32 - 1 - (screen.y / scale - 1.5).round() as i32;
                     if !(0..self.layout.width as _).contains(&x)
                         || !(0..self.layout.height as _).contains(&y)
                     {
@@ -1347,15 +1338,13 @@ impl eframe::App for App {
                             ret.update(&self.clicked_format);
                         }
                     }
-                    if let Some(gripped_side) = gripped_side
-                        && sticker.side(&self.puzzle.shape) == gripped_side
-                    {
+                    if Some(sticker.side(&self.puzzle.shape)) == gripped_side {
                         ret.update(&self.gripped_format);
                     }
                     if let Some(filter_stage) = self.filter_stage {
                         for filter in &self.filter_sequence.0[filter_stage].0 {
                             if filter
-                                .matches(&self.puzzle.shape, &sticker.piece(&self.puzzle.shape))
+                                .contains(&self.puzzle.shape, &sticker.piece(&self.puzzle.shape))
                             {
                                 ret.update(&filter.format);
                             }
@@ -1373,20 +1362,18 @@ impl eframe::App for App {
                         screen_of_pos(pos),
                         egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
                     );
-                    // TODO: is unmultiplied correct
-                    painter.rect_filled(
+
+                    painter.rect(
                         rect,
-                        0.0,
+                        // TODO: custom corner radius
+                        0.2 * scale * format.sticker_scale,
+                        // TODO: is unmultiplied correct
                         Color32::from_rgba_unmultiplied(
                             color.r(),
                             color.g(),
                             color.b(),
                             (format.sticker_opacity * 255.0) as u8,
                         ),
-                    );
-                    painter.rect_stroke(
-                        rect,
-                        0.0,
                         egui::Stroke::new(format.outline_width * scale, format.outline_color),
                         egui::StrokeKind::Inside,
                     );
@@ -1428,6 +1415,26 @@ impl eframe::App for App {
                 //     egui::TextStyle::Monospace.resolve(&ctx.style()),
                 //     Color32::LIGHT_GRAY,
                 // );
+
+                // debug seeing if stuff is aligned
+                #[cfg(false)]
+                {
+                    painter.line_segment(
+                        [egui::Pos2::ZERO, egui::Pos2::new(1000.0, 1000.0)],
+                        egui::Stroke::new(1.0, Color32::WHITE),
+                    );
+                    for i in 0..=self.layout.width.max(self.layout.height) + 2 {
+                        let c = i as f32 * scale;
+                        painter.line_segment(
+                            [egui::Pos2::new(c, 0.0), egui::Pos2::new(c, 1000.0)],
+                            egui::Stroke::new(1.0, Color32::WHITE),
+                        );
+                        painter.line_segment(
+                            [egui::Pos2::new(0.0, c), egui::Pos2::new(1000.0, c)],
+                            egui::Stroke::new(1.0, Color32::WHITE),
+                        );
+                    }
+                }
             });
     }
 }
@@ -1443,7 +1450,7 @@ fn main() -> eframe::Result {
     // panic!();
 
     // let app = App::new(&[2, 3, 4].map(Cut));
-    let app = App::new(&[3, 3, 4].map(Cut));
+    let app = App::new(&[3, 3, 4, 4].map(Cut));
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "rectangle",
