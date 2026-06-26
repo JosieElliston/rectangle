@@ -968,16 +968,87 @@ impl Layout2d {
     }
 }
 
-/// maps a nd point to a (n-1)d point
+// /// maps a nd point to a (n-1)d point
+// #[derive(Clone, Debug)]
+// struct CameraTo3dStage {
+//     dim: usize,
+//     rot: na::Matrix<f32, na::Dyn, na::Dyn, na::VecStorage<f32, na::Dyn, na::Dyn>>,
+// }
+// impl CameraTo3dStage {
+//     fn new(dim: usize) -> Self {
+//         let golden_ratio = (1.0 + 5.0_f32.sqrt()) / 2.0;
+//         let mut rot = na::DMatrix::<f32>::identity(dim, dim);
+//         let last = dim - 1;
+//         for i in 0..last {
+//             let angle = std::f32::consts::FRAC_PI_4 / golden_ratio.powi(i as i32);
+//             let (s, c) = angle.sin_cos();
+//             // Right-multiply rot by G(i, last, angle):
+//             //   new col_i    =  c * col_i + s * col_last
+//             //   new col_last = -s * col_i + c * col_last
+//             let col_i: Vec<f32> = (0..dim).map(|r| rot[(r, i)]).collect();
+//             let col_last: Vec<f32> = (0..dim).map(|r| rot[(r, last)]).collect();
+//             for r in 0..dim {
+//                 rot[(r, i)] = c * col_i[r] + s * col_last[r];
+//                 rot[(r, last)] = -s * col_i[r] + c * col_last[r];
+//             }
+//         }
+//         Self { dim, rot }
+//     }
+
+//     /// returns (projected position, depth)
+//     fn project(&self, pos: &[f32]) -> (Box<[f32]>, f32) {
+//         assert_eq!(pos.len(), self.dim);
+//         let pos = &self.rot * na::DVector::from_column_slice(pos);
+//         let pos = pos.as_slice();
+//         // hack to test 4d perspective projection
+//         if let [x, y, z, w] = pos {
+//             let f = 1.0 / (1.0 + (1.0 - w));
+//             // let f = 1.0 / (1.0 + w);
+//             (vec![x * f, y * f, z * f].into(), *w)
+//         } else {
+//             let (last, pos) = pos.split_last().unwrap();
+//             (pos.into(), *last)
+//         }
+//     }
+// }
+
+// /// maps a nd point to a 3d point
+// #[derive(Clone, Debug)]
+// struct CameraTo3d {
+//     stages: Vec<CameraTo3dStage>,
+// }
+// impl CameraTo3d {
+//     fn new(dim: usize) -> Self {
+//         let stages = (4..=dim).rev().map(CameraTo3dStage::new).collect();
+//         CameraTo3d { stages }
+//     }
+
+//     fn project(&self, pos: &[f32]) -> Box<[f32]> {
+//         if self.stages.is_empty() {
+//             assert_eq!(pos.len(), 3);
+//             return pos.into();
+//         }
+//         assert_eq!(self.stages.first().unwrap().dim, pos.len());
+//         assert_eq!(self.stages.last().unwrap().dim, 4);
+//         let mut pos = pos.to_vec().into_boxed_slice();
+//         for stage in &self.stages {
+//             let (new_pos, depth) = stage.project(&pos);
+//             pos = new_pos;
+//         }
+//         pos
+//     }
+// }
+
+/// maps a nd point to a 4d point via a orthographic projection.
 #[derive(Clone, Debug)]
-struct CameraTo3dStage {
-    dim: usize,
-    rot: na::Matrix<f32, na::Dyn, na::Dyn, na::VecStorage<f32, na::Dyn, na::Dyn>>,
+struct CameraNdTo4d {
+    rot: na::Matrix<f32, na::U4, na::Dyn, na::VecStorage<f32, na::U4, na::Dyn>>,
 }
-impl CameraTo3dStage {
+impl CameraNdTo4d {
     fn new(dim: usize) -> Self {
         let golden_ratio = (1.0 + 5.0_f32.sqrt()) / 2.0;
-        let mut rot = na::DMatrix::<f32>::identity(dim, dim);
+        let mut rot: na::Matrix<f32, na::U4, na::Dyn, na::VecStorage<f32, na::U4, na::Dyn>> =
+            na::Matrix::<f32, na::U4, na::Dyn, na::VecStorage<f32, na::U4, na::Dyn>>::identity(dim);
         let last = dim - 1;
         for i in 0..last {
             let angle = std::f32::consts::FRAC_PI_4 / golden_ratio.powi(i as i32);
@@ -992,59 +1063,71 @@ impl CameraTo3dStage {
                 rot[(r, last)] = -s * col_i[r] + c * col_last[r];
             }
         }
-        // Drop the last row: project from k-d to (k-1)-d.
-        let mat = rot.rows(0, last).clone_owned();
-        Self { dim, rot: mat }
+
+        Self { rot }
     }
 
-    fn project(&self, pos: &[f32]) -> Box<[f32]> {
-        assert_eq!(pos.len(), self.dim);
+    /// \[x, y, z, w]
+    fn project(&self, pos: &[f32]) -> [f32; 4] {
         let pos = &self.rot * na::DVector::from_column_slice(pos);
-        pos.as_slice().into()
+        *pos.as_slice().as_array::<4>().unwrap()
     }
 }
 
-/// maps a nd point to a 3d point
+/// maps a 4d point to a 3d point via a perspective projection.
 #[derive(Clone, Debug)]
-struct CameraTo3d {
-    stages: Vec<CameraTo3dStage>,
+struct Camera4dTo3d {
+    rot: na::Matrix4<f32>,
 }
-impl CameraTo3d {
-    fn new(dim: usize) -> Self {
-        let stages = (4..=dim).rev().map(CameraTo3dStage::new).collect();
-        CameraTo3d { stages }
+impl Camera4dTo3d {
+    fn new() -> Self {
+        Self {
+            rot: na::Matrix4::identity(),
+        }
     }
 
-    fn project(&self, pos: &[f32]) -> Box<[f32]> {
-        if self.stages.is_empty() {
-            assert_eq!(pos.len(), 3);
-            return pos.into();
+    /// (\[x, y, z], depth)
+    fn project(&self, pos: &[f32; 4]) -> ([f32; 3], f32) {
+        for x in pos {
+            assert!(x.is_finite());
         }
-        assert_eq!(self.stages.first().unwrap().dim, pos.len());
-        assert_eq!(self.stages.last().unwrap().dim, 4);
-        let mut pos = pos.to_vec();
-        for stage in &self.stages {
-            pos = stage.project(&pos).into_vec();
-        }
-        pos.into()
+        let pos = self.rot * na::DVector::from_column_slice(pos);
+        let [x, y, z, w] = *pos.as_slice().as_array().unwrap();
+        let f = 1.0 / (2.0 - w);
+        assert!(x.is_finite());
+        assert!(y.is_finite());
+        assert!(z.is_finite());
+        assert!(w.is_finite());
+        assert!(f.is_finite());
+        ([x * f, y * f, z * f], w)
     }
 }
 
-/// maps a 3d point to a 2d point
+/// maps a 3d point to a 2d point via a perspective projection.
 #[derive(Clone, Debug)]
-struct Camera3d {
+struct Camera3dTo2d {
     rot: na::Matrix3<f32>,
 }
-impl Camera3d {
-    // ([x, y], depth)
+impl Camera3dTo2d {
+    fn new() -> Self {
+        Self {
+            rot: na::Matrix3::identity(),
+        }
+    }
+
+    // (\[x, y], depth)
     fn project(&self, pos: &[f32; 3]) -> ([f32; 2], f32) {
+        for x in pos {
+            assert!(x.is_finite());
+        }
         let pos = self.rot * na::Vector3::new(pos[0], pos[1], pos[2]);
+        let [x, y, z] = *pos.as_slice().as_array().unwrap();
         // let x = pos[0] / (1.0 + pos[2]);
         // let y = pos[1] / (1.0 + pos[2]);
-        let x = pos[0];
-        let y = pos[1];
-        let depth = pos[2];
-        ([x, y], depth)
+        assert!(x.is_finite());
+        assert!(y.is_finite());
+        assert!(z.is_finite());
+        ([x, y], z)
     }
 }
 
@@ -1160,8 +1243,9 @@ struct FilterSequence(Vec<FilterStage>);
 #[derive(Clone, Debug)]
 struct App {
     puzzle: Puzzle,
-    cam_to_3d: CameraTo3d,
-    cam_3d: Camera3d,
+    cam_nd_to_4d: CameraNdTo4d,
+    cam_4d_to_3d: Camera4dTo3d,
+    cam_3d_to_2d: Camera3dTo2d,
     layout: Layout2d,
     /// where the labels for the sides go
     /// the centers if odd and offset in the positive direction if even
@@ -1260,10 +1344,9 @@ impl App {
         App {
             puzzle,
             layout,
-            cam_to_3d: CameraTo3d::new(shape.len()),
-            cam_3d: Camera3d {
-                rot: na::Matrix3::new(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            },
+            cam_nd_to_4d: CameraNdTo4d::new(shape.len()),
+            cam_4d_to_3d: Camera4dTo3d::new(),
+            cam_3d_to_2d: Camera3dTo2d::new(),
             side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
             clicked_pieces: HashSet::new(),
@@ -1369,37 +1452,34 @@ impl App {
             match (shift, ctrl) {
                 // 3d rotation
                 (false, false) => {
-                    self.cam_3d.rot = na::Rotation3::from_euler_angles(
+                    self.cam_3d_to_2d.rot = na::Rotation3::from_euler_angles(
                         dy * DRAG_SENSITIVITY,
                         dx * DRAG_SENSITIVITY,
                         0.0,
-                    ) * self.cam_3d.rot;
+                    ) * self.cam_3d_to_2d.rot;
                 }
                 // 4d rotation
+                // TODO: this isn't getting correctly affected by the 3d rotation
                 (true, false) => {
-                    if let Some(last_stage) = self.cam_to_3d.stages.last_mut() {
-                        // rotate along the xw plane for dx
-                        // rotate along the yw plane for dy
-                        let dim = last_stage.dim;
-                        assert_eq!(dim, 4);
-                        let w = dim - 1; // index of the w axis being projected out
+                    // rotate along the xw plane for dx
+                    // rotate along the yw plane for dy
+                    let w = 3; // index of the w axis being projected out
 
-                        let (s, c) = (dx * DRAG_SENSITIVITY).sin_cos();
-                        let mut r_xw = na::DMatrix::<f32>::identity(dim, dim);
-                        r_xw[(0, 0)] = c;
-                        r_xw[(0, w)] = -s;
-                        r_xw[(w, 0)] = s;
-                        r_xw[(w, w)] = c;
+                    let (s, c) = (dx * DRAG_SENSITIVITY).sin_cos();
+                    let mut r_xw = na::Matrix4::<f32>::identity();
+                    r_xw[(0, 0)] = c;
+                    r_xw[(0, w)] = -s;
+                    r_xw[(w, 0)] = s;
+                    r_xw[(w, w)] = c;
 
-                        let (s, c) = (dy * DRAG_SENSITIVITY).sin_cos();
-                        let mut r_yw = na::DMatrix::<f32>::identity(dim, dim);
-                        r_yw[(1, 1)] = c;
-                        r_yw[(1, w)] = -s;
-                        r_yw[(w, 1)] = s;
-                        r_yw[(w, w)] = c;
+                    let (s, c) = (-dy * DRAG_SENSITIVITY).sin_cos();
+                    let mut r_yw = na::Matrix4::<f32>::identity();
+                    r_yw[(1, 1)] = c;
+                    r_yw[(1, w)] = -s;
+                    r_yw[(w, 1)] = s;
+                    r_yw[(w, w)] = c;
 
-                        last_stage.rot = &last_stage.rot * r_xw * r_yw;
-                    }
+                    self.cam_4d_to_3d.rot = self.cam_4d_to_3d.rot * r_xw * r_yw;
                 }
                 (false, true) => {}
                 (true, true) => {}
@@ -1558,7 +1638,8 @@ impl App {
 
         /// `ret` is a `Vec` of quads with vertices in 3d.
         fn sticker_geom_to_3d(
-            cam_to_3d: &CameraTo3d,
+            cam_nd_to_4d: &CameraNdTo4d,
+            cam_4d_to_3d: &Camera4dTo3d,
             shape: &[Cut],
             pos: &[Coord],
         ) -> Vec<[[f32; 3]; 4]> {
@@ -1568,7 +1649,7 @@ impl App {
                     pos.try_into().unwrap(),
                 )],
                 4 => sticker_geom_4d(shape.try_into().unwrap(), pos.try_into().unwrap())
-                    .map(|quad| quad.map(|vert| *cam_to_3d.project(&vert).as_array::<3>().unwrap()))
+                    .map(|quad| quad.map(|vert| cam_4d_to_3d.project(&vert).0))
                     .to_vec(),
                 _ => todo!(),
             }
@@ -1579,11 +1660,40 @@ impl App {
             let mut sticker_depths = Vec::new();
             for (sticker, color_side) in &self.puzzle.stickers {
                 let pos = &sticker.0.0;
-                let float_pos: Vec<f32> = pos.iter().map(|c| c.0 as f32).collect();
-                let (_screen_pos, depth) = self
-                    .cam_3d
-                    .project(self.cam_to_3d.project(&float_pos).as_array::<3>().unwrap());
-                sticker_depths.push((sticker.clone(), *color_side, depth));
+                let pos: Box<[f32]> = pos.iter().map(|c| c.0 as f32).collect();
+
+                // project from nd to 4d
+                let pos: Box<[f32]> = if pos.len() > 4 {
+                    self.cam_nd_to_4d.project(&pos).into()
+                } else {
+                    pos
+                };
+                assert!(pos.len() <= 4);
+
+                // project from 4d to 3d
+                let pos: Box<[f32]> = if let Some(pos) = pos.as_array::<4>() {
+                    let (pos, depth) = self.cam_4d_to_3d.project(pos);
+                    // depth culling of (hopefully) the outer face
+                    if depth > 2.0 {
+                        continue;
+                    }
+                    pos.into()
+                } else {
+                    pos
+                };
+                assert!(pos.len() <= 3);
+
+                // project from 3d to 2d
+                let (pos, depth) = if let Some(pos) = pos.as_array::<3>() {
+                    let (pos, depth) = self.cam_3d_to_2d.project(pos);
+                    // TODO: maybe depth culling
+                    (pos, depth)
+                } else {
+                    (*pos.as_array().unwrap(), 0.0)
+                };
+
+                assert!(depth.is_finite());
+                sticker_depths.push((sticker.clone(), color_side, depth));
             }
             sticker_depths.sort_unstable_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
             sticker_depths
@@ -1596,7 +1706,12 @@ impl App {
             let pos = &sticker.0.0;
 
             // get the quads
-            let quads = sticker_geom_to_3d(&self.cam_to_3d, &self.puzzle.shape, pos);
+            let quads = sticker_geom_to_3d(
+                &self.cam_nd_to_4d,
+                &self.cam_4d_to_3d,
+                &self.puzzle.shape,
+                pos,
+            );
 
             // project the quads and sort them by depth
             let quads = {
@@ -1606,10 +1721,10 @@ impl App {
                         let mut screen_corners = Vec::with_capacity(4);
                         let mut total_depth = 0.0;
                         for v in &quad {
-                            let ([x, y], d) = self.cam_3d.project(v);
+                            let ([x, y], depth) = self.cam_3d_to_2d.project(v);
                             screen_corners
                                 .push(egui::Pos2::new(center.x + x * scale, center.y - y * scale));
-                            total_depth += d;
+                            total_depth += depth;
                         }
                         (*screen_corners.as_array::<4>().unwrap(), total_depth / 4.0)
                     })
@@ -1634,6 +1749,23 @@ impl App {
                         aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
                     });
                     screen_corners
+                })
+                .collect::<Vec<_>>();
+
+            // filter out degenerate quads
+            // TODO: do this better
+            let quads = quads
+                .into_iter()
+                .filter(|quad| {
+                    let area = {
+                        let [a, b, c, d] = *quad;
+                        let cross = |p: egui::Pos2, q: egui::Pos2, r: egui::Pos2| {
+                            (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+                        };
+                        (cross(a, b, c) + cross(a, c, d)).abs()
+                    };
+                    const EPSILON: f32 = 20.0;
+                    area >= EPSILON
                 })
                 .collect::<Vec<_>>();
 
@@ -1672,27 +1804,6 @@ impl eframe::App for App {
                             println!("solved: {}", self.puzzle.is_solved());
                         }
                     }
-                });
-
-                // draw ui
-                ui.horizontal(|ui| {
-                    if ui.button("scramble").clicked() {
-                        self.puzzle.scramble(&mut rand::rng());
-                    }
-                    ui.collapsing("shape", |ui| {
-                        if ui.button("build").clicked() {
-                            self.rebuild();
-                        }
-                        ui.add(egui::Slider::new(&mut self.ui_dim, 2..=7).text("dim"));
-                        // grow/shrink ui_cuts to match ui_dim, defaulting new axes to 3
-                        self.ui_cuts.resize(self.ui_dim, 3);
-                        for i in 0..self.ui_dim {
-                            ui.add(
-                                egui::Slider::new(&mut self.ui_cuts[i], 1..=7)
-                                    .text(format!("axis {}", i)),
-                            );
-                        }
-                    });
                 });
 
                 // draw puzzle with Camera
@@ -1861,6 +1972,34 @@ impl eframe::App for App {
                         );
                     }
                 }
+
+                // `Area` to draw on top of the puzzle
+                egui::Area::new("ui".into())
+                    .constrain_to(ctx.content_rect())
+                    .anchor(egui::Align2::LEFT_TOP, egui::Vec2::ZERO)
+                    // .fixed_pos(egui::Pos2::new(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        // draw ui
+                        ui.horizontal(|ui| {
+                            if ui.button("scramble").clicked() {
+                                self.puzzle.scramble(&mut rand::rng());
+                            }
+                            ui.collapsing("shape", |ui| {
+                                if ui.button("build").clicked() {
+                                    self.rebuild();
+                                }
+                                ui.add(egui::Slider::new(&mut self.ui_dim, 2..=7).text("dim"));
+                                // grow/shrink ui_cuts to match ui_dim, defaulting new axes to 3
+                                self.ui_cuts.resize(self.ui_dim, 3);
+                                for i in 0..self.ui_dim {
+                                    ui.add(
+                                        egui::Slider::new(&mut self.ui_cuts[i], 1..=7)
+                                            .text(format!("axis {}", i)),
+                                    );
+                                }
+                            });
+                        });
+                    });
             });
     }
 }
