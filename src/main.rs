@@ -3,6 +3,7 @@ use eframe::egui::{
     ahash::{HashMap, HashMapExt, HashSet, HashSetExt},
 };
 use itertools::Itertools;
+use nalgebra as na;
 use rand::prelude::*;
 use std::iter::once;
 
@@ -439,6 +440,7 @@ impl LayerMask {
     }
 }
 
+/// TODO: rename to Twist
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SideTurn {
     layers: LayerMask,
@@ -457,6 +459,7 @@ impl SideTurn {
     }
 }
 
+/// full puzzle rotation
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PuzzleTurn {
     from: Axis,
@@ -965,12 +968,85 @@ impl Layout2d {
     }
 }
 
-// #[derive(Clone, Debug)]
-// enum Layout {
-//     // OneD(Layout1d),
-//     TwoD(Layout2d),
-//     // ThreeD(Layout3d),
-// }
+/// maps a nd point to a (n-1)d point
+#[derive(Clone, Debug)]
+struct CameraTo3dStage {
+    dim: usize,
+    rot: na::Matrix<f32, na::Dyn, na::Dyn, na::VecStorage<f32, na::Dyn, na::Dyn>>,
+}
+impl CameraTo3dStage {
+    fn new(dim: usize) -> Self {
+        let golden_ratio = (1.0 + 5.0_f32.sqrt()) / 2.0;
+        let mut rot = na::DMatrix::<f32>::identity(dim, dim);
+        let last = dim - 1;
+        for i in 0..last {
+            let angle = std::f32::consts::FRAC_PI_4 / golden_ratio.powi(i as i32);
+            let (s, c) = angle.sin_cos();
+            // Right-multiply rot by G(i, last, angle):
+            //   new col_i    =  c * col_i + s * col_last
+            //   new col_last = -s * col_i + c * col_last
+            let col_i: Vec<f32> = (0..dim).map(|r| rot[(r, i)]).collect();
+            let col_last: Vec<f32> = (0..dim).map(|r| rot[(r, last)]).collect();
+            for r in 0..dim {
+                rot[(r, i)] = c * col_i[r] + s * col_last[r];
+                rot[(r, last)] = -s * col_i[r] + c * col_last[r];
+            }
+        }
+        // Drop the last row: project from k-d to (k-1)-d.
+        let mat = rot.rows(0, last).clone_owned();
+        Self { dim, rot: mat }
+    }
+
+    fn project(&self, pos: &[f32]) -> Box<[f32]> {
+        assert_eq!(pos.len(), self.dim);
+        let pos = &self.rot * na::DVector::from_column_slice(pos);
+        pos.as_slice().into()
+    }
+}
+
+/// maps a nd point to a 3d point
+#[derive(Clone, Debug)]
+struct CameraTo3d {
+    stages: Vec<CameraTo3dStage>,
+}
+impl CameraTo3d {
+    fn new(dim: usize) -> Self {
+        let stages = (4..=dim).rev().map(CameraTo3dStage::new).collect();
+        CameraTo3d { stages }
+    }
+
+    fn project(&self, pos: &[f32]) -> Box<[f32]> {
+        if self.stages.is_empty() {
+            assert_eq!(pos.len(), 3);
+            return pos.into();
+        }
+        assert_eq!(self.stages.first().unwrap().dim, pos.len());
+        assert_eq!(self.stages.last().unwrap().dim, 4);
+        let mut pos = pos.to_vec();
+        for stage in &self.stages {
+            pos = stage.project(&pos).into_vec();
+        }
+        pos.into()
+    }
+}
+
+/// maps a 3d point to a 2d point
+#[derive(Clone, Debug)]
+struct Camera3d {
+    rot: na::Matrix3<f32>,
+}
+impl Camera3d {
+    // ([x, y], depth)
+    fn project(&self, pos: &[f32; 3]) -> ([f32; 2], f32) {
+        let pos = self.rot * na::Vector3::new(pos[0], pos[1], pos[2]);
+        // let x = pos[0] / (1.0 + pos[2]);
+        // let y = pos[1] / (1.0 + pos[2]);
+        let x = pos[0];
+        let y = pos[1];
+        let depth = pos[2];
+        ([x, y], depth)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct StickerFormatBuilder {
@@ -1084,6 +1160,8 @@ struct FilterSequence(Vec<FilterStage>);
 #[derive(Clone, Debug)]
 struct App {
     puzzle: Puzzle,
+    cam_to_3d: CameraTo3d,
+    cam_3d: Camera3d,
     layout: Layout2d,
     /// where the labels for the sides go
     /// the centers if odd and offset in the positive direction if even
@@ -1099,6 +1177,8 @@ struct App {
     default_no_filter_format: StickerFormat,
     filter_sequence: FilterSequence,
     filter_stage: Option<usize>,
+    ui_dim: usize,
+    ui_cuts: Vec<i16>,
 }
 impl App {
     const MAX_DIM: usize = 10;
@@ -1180,6 +1260,10 @@ impl App {
         App {
             puzzle,
             layout,
+            cam_to_3d: CameraTo3d::new(shape.len()),
+            cam_3d: Camera3d {
+                rot: na::Matrix3::new(0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            },
             side_positions: get_side_positions(shape),
             turn_builder: TurnBuilder::new(shape),
             clicked_pieces: HashSet::new(),
@@ -1222,7 +1306,21 @@ impl App {
             },
             filter_sequence: FilterSequence(Vec::new()),
             filter_stage: None,
+            ui_dim: shape.len(),
+            ui_cuts: shape.iter().map(|c| c.0).collect(),
         }
+    }
+
+    fn rebuild(&mut self) {
+        let shape: Vec<Cut> = self.ui_cuts[..self.ui_dim]
+            .iter()
+            .map(|&c| Cut(c))
+            .collect();
+        let ui_dim = self.ui_dim;
+        let ui_cuts = self.ui_cuts.clone();
+        *self = App::new(&shape);
+        self.ui_dim = ui_dim;
+        self.ui_cuts = ui_cuts;
     }
 
     // #[inline(never)]
@@ -1260,6 +1358,295 @@ impl App {
     //     .unwrap();
     //     println!("image save in {:?}", start.elapsed());
     // }
+
+    fn ui_puzzle(&mut self, ui: &mut egui::Ui) {
+        // allocate the rect and handle camera motion
+        let screen_rect = {
+            let response = ui.allocate_response(ui.available_size(), egui::Sense::click_and_drag());
+            let egui::Vec2 { x: dx, y: dy } = response.drag_motion();
+            const DRAG_SENSITIVITY: f32 = 0.01;
+            let (shift, ctrl) = ui.ctx().input(|i| (i.modifiers.shift, i.modifiers.ctrl));
+            match (shift, ctrl) {
+                // 3d rotation
+                (false, false) => {
+                    self.cam_3d.rot = na::Rotation3::from_euler_angles(
+                        dy * DRAG_SENSITIVITY,
+                        dx * DRAG_SENSITIVITY,
+                        0.0,
+                    ) * self.cam_3d.rot;
+                }
+                // 4d rotation
+                (true, false) => {
+                    if let Some(last_stage) = self.cam_to_3d.stages.last_mut() {
+                        // rotate along the xw plane for dx
+                        // rotate along the yw plane for dy
+                        let dim = last_stage.dim;
+                        assert_eq!(dim, 4);
+                        let w = dim - 1; // index of the w axis being projected out
+
+                        let (s, c) = (dx * DRAG_SENSITIVITY).sin_cos();
+                        let mut r_xw = na::DMatrix::<f32>::identity(dim, dim);
+                        r_xw[(0, 0)] = c;
+                        r_xw[(0, w)] = -s;
+                        r_xw[(w, 0)] = s;
+                        r_xw[(w, w)] = c;
+
+                        let (s, c) = (dy * DRAG_SENSITIVITY).sin_cos();
+                        let mut r_yw = na::DMatrix::<f32>::identity(dim, dim);
+                        r_yw[(1, 1)] = c;
+                        r_yw[(1, w)] = -s;
+                        r_yw[(w, 1)] = s;
+                        r_yw[(w, w)] = c;
+
+                        last_stage.rot = &last_stage.rot * r_xw * r_yw;
+                    }
+                }
+                (false, true) => {}
+                (true, true) => {}
+            }
+            response.rect
+        };
+        let center = screen_rect.center();
+        let scale = screen_rect.width().min(screen_rect.height()) * 0.20;
+        let painter = ui.painter();
+
+        let outline_color = Color32::from_gray(30);
+        let outline_width = scale * 0.008;
+
+        fn sticker_geom_nd(pos: &[Coord]) {}
+
+        fn sticker_geom_5d(shape: &[Cut; 5], pos: &[Coord; 5]) -> [[[[f32; 5]; 4]; 6]; 8] {
+            todo!()
+        }
+
+        fn unit_cube_3d() -> [[[f32; 3]; 4]; 6] {
+            [
+                // +x face
+                [
+                    [0.5, -0.5, -0.5],
+                    [0.5, 0.5, -0.5],
+                    [0.5, 0.5, 0.5],
+                    [0.5, -0.5, 0.5],
+                ],
+                // -x face
+                [
+                    [-0.5, -0.5, -0.5],
+                    [-0.5, 0.5, -0.5],
+                    [-0.5, 0.5, 0.5],
+                    [-0.5, -0.5, 0.5],
+                ],
+                // +y face
+                [
+                    [-0.5, 0.5, -0.5],
+                    [0.5, 0.5, -0.5],
+                    [0.5, 0.5, 0.5],
+                    [-0.5, 0.5, 0.5],
+                ],
+                // -y face
+                [
+                    [-0.5, -0.5, -0.5],
+                    [0.5, -0.5, -0.5],
+                    [0.5, -0.5, 0.5],
+                    [-0.5, -0.5, 0.5],
+                ],
+                // +z face
+                [
+                    [-0.5, -0.5, 0.5],
+                    [0.5, -0.5, 0.5],
+                    [0.5, 0.5, 0.5],
+                    [-0.5, 0.5, 0.5],
+                ],
+                // -z face
+                [
+                    [-0.5, -0.5, -0.5],
+                    [0.5, -0.5, -0.5],
+                    [0.5, 0.5, -0.5],
+                    [-0.5, 0.5, -0.5],
+                ],
+            ]
+        }
+
+        fn sticker_geom_4d(shape: &[Cut; 4], pos: &[Coord; 4]) -> [[[f32; 4]; 4]; 6] {
+            assert_eq!(pos.len(), 4);
+            let axis = pos
+                .iter()
+                .zip(shape.iter())
+                .position(|(coord, cut)| coord.0.abs() == cut.0)
+                .unwrap();
+            let float_pos: Vec<f32> = pos.iter().map(|c| c.0 as f32).collect();
+            let float_pos: [f32; 4] = float_pos.try_into().unwrap();
+            let cube = unit_cube_3d();
+            cube.map(|quad| {
+                quad.map(|[cube_x, cube_y, cube_z]| {
+                    let mut vert = float_pos;
+                    for ax in 0..4 {
+                        if ax == axis {
+                            // vert[ax] += if pos[axis].0 > 0 { -0.5 } else { 0.5 };
+                            vert[ax] += if pos[axis].0 > 0 { 2.0 } else { -2.0 };
+                        } else if ax == (axis + 1) % 4 {
+                            vert[ax] += cube_x;
+                        } else if ax == (axis + 2) % 4 {
+                            vert[ax] += cube_y;
+                        } else {
+                            vert[ax] += cube_z;
+                        }
+                        vert[ax] /= shape[ax].0 as f32;
+                    }
+                    vert
+                })
+            })
+        }
+
+        fn unit_cube_2d() -> [[f32; 2]; 4] {
+            [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]
+        }
+
+        fn sticker_geom_3d(shape: &[Cut; 3], pos: &[Coord; 3]) -> [[f32; 3]; 4] {
+            let axis = pos
+                .iter()
+                .zip(shape.iter())
+                .position(|(coord, cut)| coord.0.abs() == cut.0)
+                .unwrap();
+            let float_pos: Vec<f32> = pos.iter().map(|c| c.0 as f32).collect();
+            let float_pos: [f32; 3] = float_pos.try_into().unwrap();
+            let cube = unit_cube_2d();
+            cube.map(|[cube_x, cube_y]| {
+                let mut vert = float_pos;
+                for ax in 0..3 {
+                    if ax == axis {
+                        vert[ax] += if pos[axis].0 > 0 { -0.5 } else { 0.5 };
+                    } else if ax == (axis + 1) % 3 {
+                        vert[ax] += cube_x;
+                    } else {
+                        vert[ax] += cube_y;
+                    }
+                    vert[ax] /= shape[ax].0 as f32;
+                }
+                vert
+            })
+        }
+
+        // fn sticker_geom_3d(shape: &[Cut; 3], pos: &[Coord; 3]) -> [[f32; 3]; 4] {
+        //     let axis = pos
+        //         .iter()
+        //         .zip(shape.iter())
+        //         .position(|(coord, cut)| coord.0.abs() == cut.0)
+        //         .unwrap();
+        //     let float_pos: Vec<f32> = pos.iter().map(|c| c.0 as f32).collect();
+        //     let float_pos: [f32; 3] = float_pos.try_into().unwrap();
+        //     let mut verts = Vec::with_capacity(4);
+        //     for bits in 0..(1 << 3) {
+        //         if (bits >> axis) & 1 == 1 {
+        //             continue;
+        //         }
+        //         let mut vert = float_pos;
+        //         for ax in 0..3 {
+        //             let bit = (bits >> ax) & 1;
+        //             vert[ax] += if ax == axis {
+        //                 if pos[axis].0 > 0 { -0.5 } else { 0.5 }
+        //             } else if bit == 0 {
+        //                 -0.5
+        //             } else {
+        //                 0.5
+        //             };
+        //             vert[ax] /= shape[ax].0 as f32;
+        //         }
+        //         verts.push(vert);
+        //     }
+        //     verts.try_into().unwrap()
+        // }
+
+        /// `ret` is a `Vec` of quads with vertices in 3d.
+        fn sticker_geom_to_3d(
+            cam_to_3d: &CameraTo3d,
+            shape: &[Cut],
+            pos: &[Coord],
+        ) -> Vec<[[f32; 3]; 4]> {
+            match pos.len() {
+                3 => vec![sticker_geom_3d(
+                    shape.try_into().unwrap(),
+                    pos.try_into().unwrap(),
+                )],
+                4 => sticker_geom_4d(shape.try_into().unwrap(), pos.try_into().unwrap())
+                    .map(|quad| quad.map(|vert| *cam_to_3d.project(&vert).as_array::<3>().unwrap()))
+                    .to_vec(),
+                _ => todo!(),
+            }
+        }
+
+        // stickers sorted by depth
+        let stickers = {
+            let mut sticker_depths = Vec::new();
+            for (sticker, color_side) in &self.puzzle.stickers {
+                let pos = &sticker.0.0;
+                let float_pos: Vec<f32> = pos.iter().map(|c| c.0 as f32).collect();
+                let (_screen_pos, depth) = self
+                    .cam_3d
+                    .project(self.cam_to_3d.project(&float_pos).as_array::<3>().unwrap());
+                sticker_depths.push((sticker.clone(), *color_side, depth));
+            }
+            sticker_depths.sort_unstable_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+            sticker_depths
+                .into_iter()
+                .map(|(sticker, color_side, _depth)| (sticker, color_side))
+                .collect::<Vec<_>>()
+        };
+
+        for (sticker, color_side) in stickers {
+            let pos = &sticker.0.0;
+
+            // get the quads
+            let quads = sticker_geom_to_3d(&self.cam_to_3d, &self.puzzle.shape, pos);
+
+            // project the quads and sort them by depth
+            let quads = {
+                let mut quads = quads
+                    .into_iter()
+                    .map(|quad| {
+                        let mut screen_corners = Vec::with_capacity(4);
+                        let mut total_depth = 0.0;
+                        for v in &quad {
+                            let ([x, y], d) = self.cam_3d.project(v);
+                            screen_corners
+                                .push(egui::Pos2::new(center.x + x * scale, center.y - y * scale));
+                            total_depth += d;
+                        }
+                        (*screen_corners.as_array::<4>().unwrap(), total_depth / 4.0)
+                    })
+                    .collect::<Vec<_>>();
+                // sort by depth
+                quads.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                quads
+                    .into_iter()
+                    .map(|(screen_corners, _depth)| screen_corners)
+                    .collect::<Vec<_>>()
+            };
+
+            // sort the corners ccw
+            let quads = quads
+                .into_iter()
+                .map(|mut screen_corners| {
+                    let cx = screen_corners.iter().map(|p| p.x).sum::<f32>() / 4.0;
+                    let cy = screen_corners.iter().map(|p| p.y).sum::<f32>() / 4.0;
+                    screen_corners.sort_unstable_by(|a, b| {
+                        let aa = (a.y - cy).atan2(a.x - cx);
+                        let ab = (b.y - cy).atan2(b.x - cx);
+                        aa.partial_cmp(&ab).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    screen_corners
+                })
+                .collect::<Vec<_>>();
+
+            // draw the quads
+            for quad in quads {
+                painter.add(egui::Shape::convex_polygon(
+                    quad.into(),
+                    color_side.color(),
+                    egui::Stroke::new(outline_width, outline_color),
+                ));
+            }
+        }
+    }
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1288,139 +1675,163 @@ impl eframe::App for App {
                 });
 
                 // draw ui
-                if ui.button("scramble").clicked() {
-                    self.puzzle.scramble(&mut rand::rng());
-                }
-
-                // draw puzzle
-                // we want 1 sticker of margin on each side
-                let rect = ctx.content_rect();
-                let scale = f32::min(
-                    rect.width() / (self.layout.width + 2) as f32,
-                    rect.height() / (self.layout.height + 2) as f32,
-                );
-
-                let screen_of_pos = |pos: &Position| -> egui::Pos2 {
-                    let (x, y) = self.layout.mapping[pos];
-                    egui::Pos2::new(1.5 + x as f32, 1.5 + (self.layout.height - 1 - y) as f32)
-                        * scale
-                };
-                let pos_of_screen = |screen: egui::Pos2| -> Option<Position> {
-                    let x = (screen.x / scale - 1.5).round() as i32;
-                    let y = self.layout.height as i32 - 1 - (screen.y / scale - 1.5).round() as i32;
-                    if !(0..self.layout.width as _).contains(&x)
-                        || !(0..self.layout.height as _).contains(&y)
-                    {
-                        return None;
+                ui.horizontal(|ui| {
+                    if ui.button("scramble").clicked() {
+                        self.puzzle.scramble(&mut rand::rng());
                     }
-                    self.layout.inverse.get(&(x as usize, y as usize)).cloned()
-                };
-
-                let hovered_pos: Option<Position> =
-                    ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
-                let hovered_piece = hovered_pos.and_then(|pos| {
-                    Piece::try_from(&self.puzzle.shape, pos.clone()).or_else(|| {
-                        Sticker::try_from(&self.puzzle.shape, pos.clone())
-                            .map(|sticker| sticker.piece(&self.puzzle.shape))
-                    })
+                    ui.collapsing("shape", |ui| {
+                        if ui.button("build").clicked() {
+                            self.rebuild();
+                        }
+                        ui.add(egui::Slider::new(&mut self.ui_dim, 2..=7).text("dim"));
+                        // grow/shrink ui_cuts to match ui_dim, defaulting new axes to 3
+                        self.ui_cuts.resize(self.ui_dim, 3);
+                        for i in 0..self.ui_dim {
+                            ui.add(
+                                egui::Slider::new(&mut self.ui_cuts[i], 1..=7)
+                                    .text(format!("axis {}", i)),
+                            );
+                        }
+                    });
                 });
 
-                // if we clicked, added the hovered piece to the clicked pieces
-                if let Some(hovered_piece) = &hovered_piece
-                    && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
-                {
-                    if self.clicked_pieces.contains(hovered_piece) {
-                        self.clicked_pieces.remove(hovered_piece);
-                    } else {
-                        self.clicked_pieces.insert(hovered_piece.clone());
-                    }
-                }
+                // draw puzzle with Camera
+                self.ui_puzzle(ui);
 
-                // TODO: layer mask
-                let gripped_side = match &self.turn_builder {
-                    TurnBuilder::Side { layers, side, .. } => *side,
-                    TurnBuilder::Puzzle { .. } => None,
-                };
-                let format_sticker = |sticker: &Sticker| -> StickerFormat {
-                    let mut ret = StickerFormatBuilder::NONE;
-                    if let Some(hovered_piece) = hovered_piece.clone()
-                        && sticker.piece(&self.puzzle.shape) == hovered_piece
+                // draw puzzle with Layout2d
+                #[cfg(false)]
+                {
+                    // we want 1 sticker of margin on each side
+                    let rect = ctx.content_rect();
+                    let scale = f32::min(
+                        rect.width() / (self.layout.width + 2) as f32,
+                        rect.height() / (self.layout.height + 2) as f32,
+                    );
+
+                    let screen_of_pos = |pos: &Position| -> egui::Pos2 {
+                        let (x, y) = self.layout.mapping[pos];
+                        egui::Pos2::new(1.5 + x as f32, 1.5 + (self.layout.height - 1 - y) as f32)
+                            * scale
+                    };
+                    let pos_of_screen = |screen: egui::Pos2| -> Option<Position> {
+                        let x = (screen.x / scale - 1.5).round() as i32;
+                        let y =
+                            self.layout.height as i32 - 1 - (screen.y / scale - 1.5).round() as i32;
+                        if !(0..self.layout.width as _).contains(&x)
+                            || !(0..self.layout.height as _).contains(&y)
+                        {
+                            return None;
+                        }
+                        self.layout.inverse.get(&(x as usize, y as usize)).cloned()
+                    };
+
+                    let hovered_pos: Option<Position> =
+                        ui.input(|i| i.pointer.hover_pos()).and_then(pos_of_screen);
+                    let hovered_piece = hovered_pos.and_then(|pos| {
+                        Piece::try_from(&self.puzzle.shape, pos.clone()).or_else(|| {
+                            Sticker::try_from(&self.puzzle.shape, pos.clone())
+                                .map(|sticker| sticker.piece(&self.puzzle.shape))
+                        })
+                    });
+
+                    // if we clicked, added the hovered piece to the clicked pieces
+                    if let Some(hovered_piece) = &hovered_piece
+                        && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
                     {
-                        ret.update(&self.hovered_format);
-                    }
-                    for clicked_piece in &self.clicked_pieces {
-                        if sticker.piece(&self.puzzle.shape) == *clicked_piece {
-                            ret.update(&self.clicked_format);
+                        if self.clicked_pieces.contains(hovered_piece) {
+                            self.clicked_pieces.remove(hovered_piece);
+                        } else {
+                            self.clicked_pieces.insert(hovered_piece.clone());
                         }
                     }
-                    if Some(sticker.side(&self.puzzle.shape)) == gripped_side {
-                        ret.update(&self.gripped_format);
-                    }
-                    if let Some(filter_stage) = self.filter_stage {
-                        for filter in &self.filter_sequence.0[filter_stage].0 {
-                            if filter
-                                .contains(&self.puzzle.shape, &sticker.piece(&self.puzzle.shape))
-                            {
-                                ret.update(&filter.format);
+
+                    // TODO: layer mask
+                    let gripped_side = match &self.turn_builder {
+                        TurnBuilder::Side { layers, side, .. } => *side,
+                        TurnBuilder::Puzzle { .. } => None,
+                    };
+                    let format_sticker = |sticker: &Sticker| -> StickerFormat {
+                        let mut ret = StickerFormatBuilder::NONE;
+                        if let Some(hovered_piece) = hovered_piece.clone()
+                            && sticker.piece(&self.puzzle.shape) == hovered_piece
+                        {
+                            ret.update(&self.hovered_format);
+                        }
+                        for clicked_piece in &self.clicked_pieces {
+                            if sticker.piece(&self.puzzle.shape) == *clicked_piece {
+                                ret.update(&self.clicked_format);
                             }
                         }
-                        ret.build_or(&self.default_filter_format)
-                    } else {
-                        ret.build_or(&self.default_no_filter_format)
-                    }
-                };
-
-                let painter = ui.painter();
-                // TODO: pixel alignment
-                let draw_position = |pos: &Position, color: Color32, format: &StickerFormat| {
-                    let rect = egui::Rect::from_center_size(
-                        screen_of_pos(pos),
-                        egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
-                    );
-
-                    painter.rect(
-                        rect,
-                        // TODO: custom corner radius
-                        0.2 * scale * format.sticker_scale,
-                        // TODO: is unmultiplied correct
-                        Color32::from_rgba_unmultiplied(
-                            color.r(),
-                            color.g(),
-                            color.b(),
-                            (format.sticker_opacity * 255.0) as u8,
-                        ),
-                        egui::Stroke::new(format.outline_width * scale, format.outline_color),
-                        egui::StrokeKind::Inside,
-                    );
-                };
-
-                for pos in Position::all(&self.puzzle.shape) {
-                    draw_position(&pos, self.internal_color, &self.internal_format);
-                }
-                for (pos, side) in &self.puzzle.stickers {
-                    draw_position(&pos.0, side.color(), &format_sticker(pos));
-                }
-
-                // TODO: fancy text sizing
-                let render_axis_keys = match self.turn_builder {
-                    TurnBuilder::Side { side, .. } => side.is_some(),
-                    TurnBuilder::Puzzle { .. } => true,
-                };
-                for (side, pos) in &self.side_positions {
-                    if render_axis_keys && !side.is_positive() {
-                        continue;
-                    }
-                    painter.text(
-                        screen_of_pos(&pos.0),
-                        egui::Align2::CENTER_CENTER,
-                        if render_axis_keys {
-                            side.into_axis().axis_key().to_string()
+                        if Some(sticker.side(&self.puzzle.shape)) == gripped_side {
+                            ret.update(&self.gripped_format);
+                        }
+                        if let Some(filter_stage) = self.filter_stage {
+                            for filter in &self.filter_sequence.0[filter_stage].0 {
+                                if filter.contains(
+                                    &self.puzzle.shape,
+                                    &sticker.piece(&self.puzzle.shape),
+                                ) {
+                                    ret.update(&filter.format);
+                                }
+                            }
+                            ret.build_or(&self.default_filter_format)
                         } else {
-                            side.side_key().to_string()
-                        },
-                        egui::TextStyle::Monospace.resolve(&ctx.style()),
-                        Color32::LIGHT_GRAY,
-                    );
+                            ret.build_or(&self.default_no_filter_format)
+                        }
+                    };
+
+                    let painter = ui.painter();
+                    // TODO: pixel alignment
+                    let draw_position = |pos: &Position, color: Color32, format: &StickerFormat| {
+                        let rect = egui::Rect::from_center_size(
+                            screen_of_pos(pos),
+                            egui::Vec2::new(1.0, 1.0) * scale * format.sticker_scale,
+                        );
+
+                        painter.rect(
+                            rect,
+                            // TODO: custom corner radius
+                            0.2 * scale * format.sticker_scale,
+                            // TODO: is unmultiplied correct
+                            Color32::from_rgba_unmultiplied(
+                                color.r(),
+                                color.g(),
+                                color.b(),
+                                (format.sticker_opacity * 255.0) as u8,
+                            ),
+                            egui::Stroke::new(format.outline_width * scale, format.outline_color),
+                            egui::StrokeKind::Inside,
+                        );
+                    };
+
+                    for pos in Position::all(&self.puzzle.shape) {
+                        draw_position(&pos, self.internal_color, &self.internal_format);
+                    }
+                    for (pos, side) in &self.puzzle.stickers {
+                        draw_position(&pos.0, side.color(), &format_sticker(pos));
+                    }
+
+                    // TODO: fancy text sizing
+                    let render_axis_keys = match self.turn_builder {
+                        TurnBuilder::Side { side, .. } => side.is_some(),
+                        TurnBuilder::Puzzle { .. } => true,
+                    };
+                    for (side, pos) in &self.side_positions {
+                        if render_axis_keys && !side.is_positive() {
+                            continue;
+                        }
+                        painter.text(
+                            screen_of_pos(&pos.0),
+                            egui::Align2::CENTER_CENTER,
+                            if render_axis_keys {
+                                side.into_axis().axis_key().to_string()
+                            } else {
+                                side.side_key().to_string()
+                            },
+                            egui::TextStyle::Monospace.resolve(&ctx.style()),
+                            Color32::LIGHT_GRAY,
+                        );
+                    }
                 }
 
                 // painter.text(
