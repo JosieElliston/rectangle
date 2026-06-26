@@ -1099,7 +1099,8 @@ impl Camera4dTo3d {
         assert!(z.is_finite());
         assert!(w.is_finite());
         assert!(f.is_finite());
-        ([x * f, y * f, z * f], w)
+        // ([x * f, y * f, z * f], w)
+        ([x * f, y * f, z * f], 1.0 / f)
     }
 }
 
@@ -1561,8 +1562,14 @@ impl App {
                     let mut vert = float_pos;
                     for ax in 0..4 {
                         if ax == axis {
-                            // vert[ax] += if pos[axis].0 > 0 { -0.5 } else { 0.5 };
-                            vert[ax] += if pos[axis].0 > 0 { 2.0 } else { -2.0 };
+                            // const CELL_SPACING: f32 = -0.5;
+                            // const CELL_SPACING: f32 = 1.0;
+                            const CELL_SPACING: f32 = 2.0;
+                            vert[ax] += if pos[axis].0 > 0 {
+                                CELL_SPACING
+                            } else {
+                                -CELL_SPACING
+                            };
                         } else if ax == (axis + 1) % 4 {
                             vert[ax] += cube_x;
                         } else if ax == (axis + 2) % 4 {
@@ -1655,11 +1662,66 @@ impl App {
             }
         }
 
+        // find the side that gets 4d_to_3d projected closest to the camera and cull it
+        let side_to_cull: Option<Side> = {
+            let dim = self.puzzle.shape.len();
+            if dim <= 3 {
+                None
+            } else {
+                Some(
+                    (-(dim as i16)..dim as i16)
+                        .map(Side)
+                        .map(|side| {
+                            let sign = if side.is_positive() { 1 } else { -1 };
+                            let axis = side.axis();
+                            let mut pos = vec![0; dim];
+                            pos[axis.into_usize()] = sign;
+                            let pos: Box<[f32]> = pos.iter().map(|c| *c as f32).collect();
+
+                            // project nd to 4d
+                            let pos = if pos.len() > 4 {
+                                self.cam_nd_to_4d.project(&pos)
+                            } else {
+                                *pos.as_array::<4>().unwrap()
+                            };
+
+                            // project from 4d to 3d
+                            let (pos, depth) = self.cam_4d_to_3d.project(&pos);
+
+                            (side, depth)
+                        })
+                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                        .unwrap()
+                        .0,
+                )
+            }
+        };
+
         // stickers sorted by depth
         let stickers = {
             let mut sticker_depths = Vec::new();
             for (sticker, color_side) in &self.puzzle.stickers {
                 let pos = &sticker.0.0;
+                // cull if the sticker is on the side_to_cull
+                if let Some(side_to_cull) = side_to_cull {
+                    let axis_to_cull = side_to_cull.axis();
+                    if pos[axis_to_cull.into_usize()]
+                        == if side_to_cull.is_positive() {
+                            self.puzzle.shape[axis_to_cull.into_usize()]
+                                .coords()
+                                .last()
+                                .unwrap()
+                        } else {
+                            self.puzzle.shape[axis_to_cull.into_usize()]
+                                .coords()
+                                .next()
+                                .unwrap()
+                        }
+                    {
+                        continue;
+                    }
+                }
+
                 let pos: Box<[f32]> = pos.iter().map(|c| c.0 as f32).collect();
 
                 // project from nd to 4d
@@ -1671,20 +1733,24 @@ impl App {
                 assert!(pos.len() <= 4);
 
                 // project from 4d to 3d
-                let pos: Box<[f32]> = if let Some(pos) = pos.as_array::<4>() {
+                let (pos, depth_4d_to_3d) = if let Some(pos) = pos.as_array::<4>() {
                     let (pos, depth) = self.cam_4d_to_3d.project(pos);
-                    // depth culling of (hopefully) the outer face
-                    if depth > 2.0 {
-                        continue;
-                    }
-                    pos.into()
+                    // actually instead of culling each sticker,
+                    // pick a side to cull,
+                    // and cull all the stickers on that side.
+
+                    // // depth culling of (hopefully) the outer face
+                    // if depth > 2.0 {
+                    //     continue;
+                    // }
+                    (pos.into(), depth)
                 } else {
-                    pos
+                    (pos, 1.0)
                 };
                 assert!(pos.len() <= 3);
 
                 // project from 3d to 2d
-                let (pos, depth) = if let Some(pos) = pos.as_array::<3>() {
+                let (pos, depth_3d_to_2d) = if let Some(pos) = pos.as_array::<3>() {
                     let (pos, depth) = self.cam_3d_to_2d.project(pos);
                     // TODO: maybe depth culling
                     (pos, depth)
@@ -1692,8 +1758,20 @@ impl App {
                     (*pos.as_array().unwrap(), 0.0)
                 };
 
-                assert!(depth.is_finite());
-                sticker_depths.push((sticker.clone(), color_side, depth));
+                assert!(depth_4d_to_3d.is_finite());
+                assert!(depth_3d_to_2d.is_finite());
+                // sticker_depths.push((sticker.clone(), color_side, -depth_3d_to_2d));
+                // sticker_depths.push((sticker.clone(), color_side, depth_4d_to_3d * depth_3d_to_2d));
+                sticker_depths.push((
+                    sticker.clone(),
+                    color_side,
+                    depth_4d_to_3d.signum() * depth_3d_to_2d,
+                ));
+                // sticker_depths.push((
+                //     sticker.clone(),
+                //     color_side,
+                //     depth_4d_to_3d.signum() * depth_3d_to_2d.abs(),
+                // ));
             }
             sticker_depths.sort_unstable_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
             sticker_depths
