@@ -1460,27 +1460,33 @@ impl App {
                     ) * self.cam_3d_to_2d.rot;
                 }
                 // 4d rotation
-                // TODO: this isn't getting correctly affected by the 3d rotation
                 (true, false) => {
-                    // rotate along the xw plane for dx
-                    // rotate along the yw plane for dy
-                    let w = 3; // index of the w axis being projected out
+                    // Rotate in the plane of (screen_axis, w) so the rotation is
+                    // view-relative (affected by the current 3d camera orientation).
+                    //
+                    // screen_x in 3d = R3^T * e1 = first row of cam_3d_to_2d.rot
+                    // screen_y in 3d = R3^T * (-e2) = negative second row (y is flipped)
+                    //
+                    // Givens rotation in plane (a, b):
+                    //   R = I + (c-1)*(a*aT + b*bT) + s*(b*aT - a*bT)
+                    let r3 = &self.cam_3d_to_2d.rot;
+                    let screen_x = na::Vector4::new(r3[(0, 0)], r3[(0, 1)], r3[(0, 2)], 0.0);
+                    let screen_y = na::Vector4::new(-r3[(1, 0)], -r3[(1, 1)], -r3[(1, 2)], 0.0);
+                    let w_axis = na::Vector4::new(0.0_f32, 0.0, 0.0, 1.0);
 
                     let (s, c) = (dx * DRAG_SENSITIVITY).sin_cos();
-                    let mut r_xw = na::Matrix4::<f32>::identity();
-                    r_xw[(0, 0)] = c;
-                    r_xw[(0, w)] = -s;
-                    r_xw[(w, 0)] = s;
-                    r_xw[(w, w)] = c;
+                    let r_xw = na::Matrix4::<f32>::identity()
+                        + (c - 1.0)
+                            * (screen_x * screen_x.transpose() + w_axis * w_axis.transpose())
+                        + s * (w_axis * screen_x.transpose() - screen_x * w_axis.transpose());
 
-                    let (s, c) = (-dy * DRAG_SENSITIVITY).sin_cos();
-                    let mut r_yw = na::Matrix4::<f32>::identity();
-                    r_yw[(1, 1)] = c;
-                    r_yw[(1, w)] = -s;
-                    r_yw[(w, 1)] = s;
-                    r_yw[(w, w)] = c;
+                    let (s, c) = (dy * DRAG_SENSITIVITY).sin_cos();
+                    let r_yw = na::Matrix4::<f32>::identity()
+                        + (c - 1.0)
+                            * (screen_y * screen_y.transpose() + w_axis * w_axis.transpose())
+                        + s * (w_axis * screen_y.transpose() - screen_y * w_axis.transpose());
 
-                    self.cam_4d_to_3d.rot = self.cam_4d_to_3d.rot * r_xw * r_yw;
+                    self.cam_4d_to_3d.rot = r_xw * r_yw * self.cam_4d_to_3d.rot;
                 }
                 (false, true) => {}
                 (true, true) => {}
